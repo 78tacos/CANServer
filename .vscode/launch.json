@@ -1,0 +1,27 @@
+{
+  "configurations": [
+    {
+      "type": "cppdbg",
+      "request": "launch",
+      "name": "Launch Server",
+      "program": "${workspaceFolder}/output/server", // Updated to run from output folder
+      "args": [
+        "server.conf"
+      ],
+      "stopAtEntry": false,
+      "cwd": "${workspaceFolder}/output", // Updated to run from output folder
+      "environment": [],
+      "externalConsole": false,
+      "MIMode": "gdb",
+      "miDebuggerPath": "/usr/bin/gdb",
+      "setupCommands": [
+        {
+          "description": "Enable pretty-printing for gdb",
+          "text": "-enable-pretty-printing",
+          "ignoreFailures": true
+        }
+      ],
+      "preLaunchTask": "build"
+    }
+  ]
+}

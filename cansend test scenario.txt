@@ -1,0 +1,7 @@
+cansend test scenario
+run server
+run client
+candump -tz vcan0
+
+cansend vcan0 123#deadbeef 1000ms (optional: priority #)
+cansend vcan0 456#cabcadfe 1500ms 
