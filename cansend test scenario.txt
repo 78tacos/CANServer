@@ -5,3 +5,6 @@ candump -tz vcan0
 
 cansend vcan0 123#deadbeef 1000ms (optional: priority #)
 cansend vcan0 456#cabcadfe 1500ms 
+
+CANSEND#0x123#DEADBEEF#1000#INTERFACE
+CANSEND#123#00000000#1000#vcan0
