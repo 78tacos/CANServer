@@ -4,6 +4,7 @@ client
 *.exe
 *.out
 *.app
+output/
 
 # Object files
 *.o
@@ -87,7 +88,6 @@ cmake_install.cmake
 Makefile
 *.cmake
 !CMakeLists.txt
-
 # Dependency files
 *.d
 
@@ -109,3 +109,6 @@ vgcore.*
 *.tmp
 *.temp
 .#*
+output/client.conf
+output/server
+output/server.log

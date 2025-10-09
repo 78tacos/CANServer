@@ -47,6 +47,7 @@
 Todo: add license stuff, maybe add candump-like features to ui
 add resource monitoring to send to client ui
 //update frontend info "message" <- forgot what I meant here
+maybe add (automatic and manual) check for all busses available to system and send message to client
 
 deadline doesn't seem to work with precision. effectively just sleep
 
@@ -356,6 +357,41 @@ private:
     std::atomic<std::size_t> seq;
 };
 
+std::vector<std::string> availableCanInterfaces;
+std::mutex canInterfacesMutex;
+
+// helper function to discover CAN interfaces
+std::vector<std::string> discoverCanInterfaces() {
+    std::vector<std::string> interfaces;
+    std::string netPath = "/sys/class/net";
+    
+    try {
+        for (const auto& entry : std::filesystem::directory_iterator(netPath)) {
+            if (entry.is_directory()) {
+                std::string ifaceName = entry.path().filename().string();
+                // Check if it's a CAN device by looking for can_bittiming
+                std::string canPath = entry.path().string() + "/can_bittiming";
+                if (std::filesystem::exists(canPath)) {
+                    interfaces.push_back(ifaceName);
+                    logEvent(DEBUG, "Discovered CAN interface: " + ifaceName);
+                }
+            }
+        }
+    } catch (const std::exception& e) {
+        logEvent(ERROR, "Error discovering CAN interfaces: " + std::string(e.what()));
+    }
+    
+    return interfaces;
+}
+
+// Add helper function to validate CAN interface
+bool isValidCanInterface(const std::string& interface) {
+    std::lock_guard<std::mutex> lock(canInterfacesMutex);
+    return std::find(availableCanInterfaces.begin(), 
+                     availableCanInterfaces.end(), 
+                     interface) != availableCanInterfaces.end();
+}
+
 int main(int argc, char* argv[]) {
     int sockfd, new_fd;
     struct addrinfo hints, *servinfo, *p;
@@ -486,6 +522,18 @@ int main(int argc, char* argv[]) {
     std::cout << "server: waiting for connections...\n";
 
     ThreadPool pool(std::max<size_t>(1, std::min<size_t>(2, std::thread::hardware_concurrency()))); // prefer 2 threads, but at least 1
+
+    // Discover available CAN interfaces
+    availableCanInterfaces = discoverCanInterfaces();
+    if (availableCanInterfaces.empty()) {
+        logEvent(WARNING, "No CAN interfaces found on system");
+    } else {
+        std::string ifaceList;
+        for (const auto& iface : availableCanInterfaces) {
+            ifaceList += iface + " ";
+        }
+        logEvent(INFO, "Available CAN interfaces: " + ifaceList);
+    }
 
     while (true) {
         sin_size = sizeof their_addr;
@@ -674,6 +722,35 @@ int main(int argc, char* argv[]) {
                 send(new_fd, "All tasks killed\n", 17, 0);
             };
 
+            commandMap["LIST_CAN_INTERFACES"] = [&](const std::string&) {
+                logEvent(INFO, "Received LIST_CAN_INTERFACES command from " + std::string(s));
+                std::string response;
+                {
+                    std::lock_guard<std::mutex> lock(canInterfacesMutex);
+                    if (availableCanInterfaces.empty()) {
+                        response = "No CAN interfaces available\n";
+                    } else {
+                        response = "Available CAN interfaces:\n";
+                        for (const auto& iface : availableCanInterfaces) {
+                            response += "  " + iface + "\n";
+                        }
+                    }
+                }
+                send(new_fd, response.c_str(), response.size(), 0);
+            };
+
+            commandMap["REFRESH_CAN_INTERFACES"] = [&](const std::string&) {
+                logEvent(INFO, "Received REFRESH_CAN_INTERFACES command from " + std::string(s));
+                {
+                    std::lock_guard<std::mutex> lock(canInterfacesMutex);
+                    availableCanInterfaces = discoverCanInterfaces();
+                }
+                std::string response = "CAN interfaces refreshed. Found " + 
+                                      std::to_string(availableCanInterfaces.size()) + 
+                                      " interface(s)\n";
+                send(new_fd, response.c_str(), response.size(), 0);
+            };
+
             auto setupRecurringCansend = [&](const std::string& cmd, int ct, int priority, ThreadPool& pool, std::vector<pid_t>& clientPids, std::unordered_map<std::string, std::shared_ptr<bool>>& taskPauses, std::unordered_map<std::string, std::shared_ptr<bool>>& taskActive, std::unordered_map<std::string, std::string>& taskDetails, std::atomic<int>& taskCounter) -> std::string {
                 std::string taskId = "task_" + std::to_string(taskCounter++);
                 auto pauseFlag = std::make_shared<bool>(false);
@@ -751,25 +828,34 @@ int main(int argc, char* argv[]) {
                             
                             if (WIFEXITED(status) && WEXITSTATUS(status) != 0) {
                                 int exitCode = WEXITSTATUS(status);
-                                errorMsg = "Task " + taskId + " stopped: cansend failed with exit code " + std::to_string(exitCode);
+                                errorMsg = "cansend failed with exit code " + std::to_string(exitCode);
                                 hasError = true;
-                                logEvent(ERROR, errorMsg);
                             } else if (WIFSIGNALED(status)) {
                                 int signal = WTERMSIG(status);
-                                errorMsg = "Task " + taskId + " stopped: cansend terminated by signal " + std::to_string(signal);
+                                errorMsg = "cansend terminated by signal " + std::to_string(signal);
                                 hasError = true;
-                                logEvent(ERROR, errorMsg);
                             }
                             
                             if (hasError) {
-                                *taskActive[taskId] = false;  // Stop the task
-                                {
-                                    std::lock_guard<std::mutex> lock(globalErrorMutex);
-                                    globalTaskErrors[taskId] = errorMsg;
-                                }
+                                // Get task details before cleanup
+                                std::string taskDetail = taskDetails[taskId];
+                                
+                                // Stop the task and clean up
+                                *taskActive[taskId] = false;
+                                taskPauses.erase(taskId);
+                                taskDetails.erase(taskId);
+                                taskActive.erase(taskId);
+                                
+                                // Log the error
+                                std::string fullError = "Task " + taskId + " stopped: " + errorMsg + " (" + taskDetail + ")";
+                                logEvent(ERROR, fullError);
+                                
                                 // Send notification to client
-                                std::string notification = "ERROR: " + errorMsg + "\n";
-                                send(new_fd, notification.c_str(), notification.size(), 0);
+                                std::string notification = "ERROR: Task " + taskId + " stopped - " + errorMsg + "\n";
+                                ssize_t sent = send(new_fd, notification.c_str(), notification.size(), MSG_NOSIGNAL);
+                                if (sent == -1) {
+                                    logEvent(WARNING, "Failed to send error notification to client: " + std::string(strerror(errno)));
+                                }
                             }
                         }
                     }
@@ -817,6 +903,23 @@ int main(int argc, char* argv[]) {
                             std::string canPayload = parts[1];
                             std::string timeStr = parts[2];
                             std::string canBus = parts[3];
+
+                            // Validate CAN interface
+                            if (!isValidCanInterface(canBus)) {
+                                std::string errorMsg = "ERROR: CAN interface '" + canBus + 
+                                                      "' is not available. Use LIST_CAN_INTERFACES to see available interfaces.\n";
+                                logEvent(ERROR, "Invalid CAN interface '" + canBus + "' requested by " + std::string(s));
+                                send(new_fd, errorMsg.c_str(), errorMsg.size(), 0);
+                                continue;
+                            }
+
+                            if (canId.starts_with("0x") || canId.starts_with("0X")) {
+                                canId = canId.substr(2);
+                            }
+
+                            if (timeStr.ends_with("ms")) {
+                                timeStr = timeStr.substr(0, timeStr.size() - 2);
+                            }
 
                             // Optional priority (default to 5)
                             int parsedPriority = priority;

@@ -187,3 +187,90 @@
 [2025-10-07 20:14:19] [10] Client disconnected: 127.0.0.1
 [2025-10-08 19:41:38] [5] Log level set to DEBUG
 [2025-10-08 19:41:38] [10] server: waiting for connections...
+[2025-10-08 20:31:36] [5] Log level set to DEBUG
+[2025-10-08 20:31:36] [10] server: waiting for connections...
+[2025-10-08 20:32:35] [10] Connection from: 127.0.0.1
+[2025-10-08 20:32:38] [5] Received from 127.0.0.1: test
+[2025-10-08 20:32:38] [20] Unknown command from 127.0.0.1: test
+[2025-10-08 20:32:42] [5] Received from 127.0.0.1: test
+[2025-10-08 20:32:42] [20] Unknown command from 127.0.0.1: test
+[2025-10-08 20:33:26] [5] Received from 127.0.0.1: CANSEND#0x123#DEADBEEF#1000ms#vcan0
+[2025-10-08 20:33:26] [10] Parsed CANSEND: vcan0 0x123#DEADBEEF every 1000ms priority 5 from 127.0.0.1
+[2025-10-08 20:34:19] [5] Received from 127.0.0.1: test
+[2025-10-08 20:34:19] [20] Unknown command from 127.0.0.1: test
+[2025-10-08 20:34:19] [30] Task task_0 stopped: cansend failed with exit code 1
+[2025-10-08 20:34:19] [30] Task task_0 stopped: cansend failed with exit code 1
+[2025-10-08 20:34:19] [30] Task task_0 stopped: cansend failed with exit code 1
+[2025-10-08 20:34:19] [30] Task task_0 stopped: cansend failed with exit code 1
+[2025-10-08 20:34:19] [30] Task task_0 stopped: cansend failed with exit code 1
+[2025-10-08 20:34:19] [30] Task task_0 stopped: cansend failed with exit code 1
+[2025-10-08 20:34:19] [30] Task task_0 stopped: cansend failed with exit code 1
+[2025-10-08 20:34:19] [30] Task task_0 stopped: cansend failed with exit code 1
+[2025-10-08 20:34:19] [30] Task task_0 stopped: cansend failed with exit code 1
+[2025-10-08 20:34:19] [30] Task task_0 stopped: cansend failed with exit code 1
+[2025-10-08 20:34:19] [30] Task task_0 stopped: cansend failed with exit code 1
+[2025-10-08 20:34:19] [30] Task task_0 stopped: cansend failed with exit code 1
+[2025-10-08 20:34:19] [30] Task task_0 stopped: cansend failed with exit code 1
+[2025-10-08 20:34:19] [30] Task task_0 stopped: cansend failed with exit code 1
+[2025-10-08 20:34:19] [30] Task task_0 stopped: cansend failed with exit code 1
+[2025-10-08 20:34:19] [30] Task task_0 stopped: cansend failed with exit code 1
+[2025-10-08 20:34:19] [30] Task task_0 stopped: cansend failed with exit code 1
+[2025-10-08 20:34:19] [30] Task task_0 stopped: cansend failed with exit code 1
+[2025-10-08 20:34:19] [30] Task task_0 stopped: cansend failed with exit code 1
+[2025-10-08 20:34:19] [30] Task task_0 stopped: cansend failed with exit code 1
+[2025-10-08 20:34:19] [30] Task task_0 stopped: cansend failed with exit code 1
+[2025-10-08 20:34:19] [30] Task task_0 stopped: cansend failed with exit code 1
+[2025-10-08 20:34:19] [30] Task task_0 stopped: cansend failed with exit code 1
+[2025-10-08 20:34:19] [30] Task task_0 stopped: cansend failed with exit code 1
+[2025-10-08 20:34:19] [30] Task task_0 stopped: cansend failed with exit code 1
+[2025-10-08 20:34:19] [30] Task task_0 stopped: cansend failed with exit code 1
+[2025-10-08 20:34:19] [30] Task task_0 stopped: cansend failed with exit code 1
+[2025-10-08 20:34:19] [30] Task task_0 stopped: cansend failed with exit code 1
+[2025-10-08 20:34:19] [30] Task task_0 stopped: cansend failed with exit code 1
+[2025-10-08 20:34:19] [30] Task task_0 stopped: cansend failed with exit code 1
+[2025-10-08 20:34:19] [30] Task task_0 stopped: cansend failed with exit code 1
+[2025-10-08 20:34:19] [30] Task task_0 stopped: cansend failed with exit code 1
+[2025-10-08 20:34:19] [30] Task task_0 stopped: cansend failed with exit code 1
+[2025-10-08 20:34:19] [30] Task task_0 stopped: cansend failed with exit code 1
+[2025-10-08 20:34:19] [30] Task task_0 stopped: cansend failed with exit code 1
+[2025-10-08 20:34:19] [30] Task task_0 stopped: cansend failed with exit code 1
+[2025-10-08 20:34:19] [30] Task task_0 stopped: cansend failed with exit code 1
+[2025-10-08 20:34:19] [30] Task task_0 stopped: cansend failed with exit code 1
+[2025-10-08 20:34:19] [30] Task task_0 stopped: cansend failed with exit code 1
+[2025-10-08 20:34:19] [30] Task task_0 stopped: cansend failed with exit code 1
+[2025-10-08 20:34:19] [30] Task task_0 stopped: cansend failed with exit code 1
+[2025-10-08 20:34:19] [30] Task task_0 stopped: cansend failed with exit code 1
+[2025-10-08 20:34:19] [30] Task task_0 stopped: cansend failed with exit code 1
+[2025-10-08 20:34:19] [30] Task task_0 stopped: cansend failed with exit code 1
+[2025-10-08 20:34:19] [30] Task task_0 stopped: cansend failed with exit code 1
+[2025-10-08 20:34:19] [30] Task task_0 stopped: cansend failed with exit code 1
+[2025-10-08 20:34:19] [30] Task task_0 stopped: cansend failed with exit code 1
+[2025-10-08 20:34:19] [30] Task task_0 stopped: cansend failed with exit code 1
+[2025-10-08 20:34:19] [30] Task task_0 stopped: cansend failed with exit code 1
+[2025-10-08 20:34:19] [30] Task task_0 stopped: cansend failed with exit code 1
+[2025-10-08 20:34:19] [30] Task task_0 stopped: cansend failed with exit code 1
+[2025-10-08 20:34:19] [30] Task task_0 stopped: cansend failed with exit code 1
+[2025-10-08 20:41:39] [5] Log level set to DEBUG
+[2025-10-08 20:41:39] [10] server: waiting for connections...
+[2025-10-08 20:41:52] [10] Connection from: 127.0.0.1
+[2025-10-08 20:44:38] [5] Received from 127.0.0.1: CANSEND#0x123#DEADBEEF#1000ms#vcan0
+[2025-10-08 20:44:38] [10] Parsed CANSEND: vcan0 123#DEADBEEF every 1000ms priority 5 from 127.0.0.1
+[2025-10-08 20:45:06] [5] Received from 127.0.0.1: KILL_TASK task_0
+[2025-10-08 20:45:06] [10] Killed task task_0 from 127.0.0.1
+[2025-10-08 20:55:55] [5] Log level set to DEBUG
+[2025-10-08 20:55:55] [10] server: waiting for connections...
+[2025-10-08 20:55:59] [10] Connection from: 127.0.0.1
+[2025-10-08 20:57:09] [5] Received from 127.0.0.1: CANSEND#0x123#DEADBEEF#1000#vcan0
+[2025-10-08 20:57:09] [10] Parsed CANSEND: vcan0 123#DEADBEEF every 1000ms priority 5 from 127.0.0.1
+[2025-10-08 21:15:15] [5] Log level set to DEBUG
+[2025-10-08 21:15:15] [10] server: waiting for connections...
+[2025-10-08 21:15:15] [20] No CAN interfaces found on system
+[2025-10-08 21:15:22] [10] Connection from: 127.0.0.1
+[2025-10-08 21:15:46] [5] Received from 127.0.0.1: test
+[2025-10-08 21:15:46] [20] Unknown command from 127.0.0.1: test
+[2025-10-08 21:16:04] [5] Received from 127.0.0.1: LIST_CAN_INTERFACES
+[2025-10-08 21:16:04] [10] Received LIST_CAN_INTERFACES command from 127.0.0.1
+[2025-10-08 21:16:11] [5] Received from 127.0.0.1: REFRESH_CAN_INTERFACES
+[2025-10-08 21:16:11] [10] Received REFRESH_CAN_INTERFACES command from 127.0.0.1
+[2025-10-08 21:16:18] [5] Received from 127.0.0.1: CANSEND#123#DEADBEEF#100#can0
+[2025-10-08 21:16:18] [30] Invalid CAN interface 'can0' requested by 127.0.0.1
