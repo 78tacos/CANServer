@@ -1,10 +1,32 @@
 CXX = g++
-CXXFLAGS = -std=c++20 -Wall
+CXXFLAGS = -std=c++20 -Wall -pthread
+TARGET = output/server
+CLIENT_TARGET = output/client
+TEST_TARGET = output/test_server
+SRC = server.cpp
+CLIENT_SRC = client.cpp
+TEST_SRC = test_server.cpp
 
-all: server
+all: $(TARGET)
 
-server: server.cpp
-	    $(CXX) $(CXXFLAGS) -o server server.cpp
+$(TARGET): $(SRC)
+	mkdir -p output
+	$(CXX) $(CXXFLAGS) -o $(TARGET) $(SRC)
+
+client: $(CLIENT_TARGET)
+
+$(CLIENT_TARGET): $(CLIENT_SRC)
+	mkdir -p output
+	$(CXX) $(CXXFLAGS) -o $(CLIENT_TARGET) $(CLIENT_SRC)
+
+test: $(TEST_TARGET)
+	./$(TEST_TARGET)
+
+$(TEST_TARGET): $(TEST_SRC)
+	mkdir -p output
+	$(CXX) $(CXXFLAGS) -o $(TEST_TARGET) $(TEST_SRC)
 
 clean:
-	    rm -f server
+	rm -f $(TARGET) $(CLIENT_TARGET) $(TEST_TARGET)
+
+.PHONY: all client test clean

@@ -5,6 +5,7 @@ client
 *.out
 *.app
 output/
+.ignore/
 
 # Object files
 *.o
