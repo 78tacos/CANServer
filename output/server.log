@@ -185,3 +185,5 @@
 [2025-10-07 20:11:48] [30] Task task_1 stopped due to cansend error (exit code 1)
 [2025-10-07 20:11:48] [30] Task task_1 stopped due to cansend error (exit code 1)
 [2025-10-07 20:14:19] [10] Client disconnected: 127.0.0.1
+[2025-10-08 19:41:38] [5] Log level set to DEBUG
+[2025-10-08 19:41:38] [10] server: waiting for connections...

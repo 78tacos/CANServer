@@ -1,0 +1,111 @@
+# Compiled binaries
+server
+client
+*.exe
+*.out
+*.app
+
+# Object files
+*.o
+*.obj
+*.ko
+*.elf
+
+# Precompiled Headers
+*.gch
+*.pch
+
+# Libraries
+*.lib
+*.a
+*.la
+*.lo
+*.so
+*.so.*
+*.dylib
+
+# Shared objects
+*.dll
+
+# Static libraries
+*.lai
+*.la
+*.a
+
+# Executables
+*.exe
+*.out
+*.app
+*.i*86
+*.x86_64
+*.hex
+
+# Debug files
+*.dSYM/
+*.su
+*.idb
+*.pdb
+
+# Build directories
+build/
+bin/
+obj/
+debug/
+release/
+output/*.log
+output/*.pid
+
+# Editor/IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+*.bak
+
+# Log files
+*.log
+server.log
+client.log
+
+# Configuration (keep templates)
+*.conf
+!*.conf.example
+!output/server.conf.template
+!output/client.conf.template
+
+# Core dumps
+core
+core.*
+*.core
+
+# CMake
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+Makefile
+*.cmake
+!CMakeLists.txt
+
+# Dependency files
+*.d
+
+# Profiling data
+*.gcda
+*.gcno
+*.gcov
+
+# Valgrind output
+*.valgrind
+vgcore.*
+
+# Backup files
+*~
+*.orig
+*.rej
+
+# Temporary files
+*.tmp
+*.temp
+.#*

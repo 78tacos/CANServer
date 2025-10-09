@@ -58,6 +58,7 @@ if trying to pause/resume/kill a non-existent task, return something useful
 //add feature to restart server from client
 add client window for server log viewing
 handle cansend errors
+add error handling for wrong port used when connecting client in ui
 
 polish:
 make sending timer more accurate
@@ -188,6 +189,10 @@ ThreadRegistry registry;
 // Global map to track PIDs to task IDs for error handling
 std::unordered_map<pid_t, std::string> globalPidToTaskId;
 std::mutex globalPidMutex;  // Protect the global map
+
+// Add a new global map for task error messages
+std::unordered_map<std::string, std::string> globalTaskErrors;
+std::mutex globalErrorMutex;
 
 // Signal handler for SIGCHLD - now only for logging, reaping handled in client threads
 void sigchld_handler(int s) {
@@ -508,7 +513,7 @@ int main(int argc, char* argv[]) {
             info.id = std::this_thread::get_id();
             info.name = "client handler for " + std::string(s);
             info.status = "running";
-            info.start_time = std::chrono::high_resolution_clock::now();  // Changed from steady_clock
+            info.start_time = std::chrono::high_resolution_clock::now();  // Changed from steady_clock but might change back
             std::array<char, MAXDATASIZE> buf;
             int numbytes;
             bool niceShutdown = false;
@@ -610,8 +615,28 @@ int main(int argc, char* argv[]) {
             commandMap["LIST_TASKS"] = [&](const std::string&) {
                 std::string response = "Active tasks:\n";
                 for (const auto& [id, detail] : taskDetails) {
-                    std::string status = *taskPauses[id] ? "paused" : "running";
+                    std::string status;
+                    if (!*taskActive[id]) {
+                        std::lock_guard<std::mutex> lock(globalErrorMutex);
+                        if (globalTaskErrors.count(id)) {
+                            status = "stopped (error)";
+                        } else {
+                            status = "stopped";
+                        }
+                    } else if (*taskPauses[id]) {
+                        status = "paused";
+                    } else {
+                        status = "running";
+                    }
                     response += id + ": " + detail + " (" + status + ")\n";
+                    
+                    // Include error message if available
+                    if (!*taskActive[id]) {
+                        std::lock_guard<std::mutex> lock(globalErrorMutex);
+                        if (globalTaskErrors.count(id)) {
+                            response += "  Error: " + globalTaskErrors[id] + "\n";
+                        }
+                    }
                 }
                 send(new_fd, response.c_str(), response.size(), 0);
             };
@@ -623,6 +648,10 @@ int main(int argc, char* argv[]) {
                     taskPauses.erase(taskId);
                     taskDetails.erase(taskId);
                     taskActive.erase(taskId);
+                    {
+                        std::lock_guard<std::mutex> lock(globalErrorMutex);
+                        globalTaskErrors.erase(taskId);  // Clean up error message
+                    }
                     logEvent(INFO, "Killed task " + taskId + " from " + std::string(s));
                     send(new_fd, ("Task " + taskId + " killed\n").c_str(), ("Task " + taskId + " killed\n").size(), 0);
                 } else {
@@ -638,6 +667,10 @@ int main(int argc, char* argv[]) {
                 taskPauses.clear();
                 taskDetails.clear();
                 taskActive.clear();
+                {
+                    std::lock_guard<std::mutex> lock(globalErrorMutex);
+                    globalTaskErrors.clear();  // Clean up all error messages
+                }
                 send(new_fd, "All tasks killed\n", 17, 0);
             };
 
@@ -713,12 +746,30 @@ int main(int argc, char* argv[]) {
                             }
                         }
                         if (!taskId.empty() && taskActive.count(taskId)) {
+                            std::string errorMsg;
+                            bool hasError = false;
+                            
                             if (WIFEXITED(status) && WEXITSTATUS(status) != 0) {
-                                *taskActive[taskId] = false;  // Stop the task
-                                logEvent(ERROR, "Task " + taskId + " stopped due to cansend error (exit code " + std::to_string(WEXITSTATUS(status)) + ")");
+                                int exitCode = WEXITSTATUS(status);
+                                errorMsg = "Task " + taskId + " stopped: cansend failed with exit code " + std::to_string(exitCode);
+                                hasError = true;
+                                logEvent(ERROR, errorMsg);
                             } else if (WIFSIGNALED(status)) {
-                                *taskActive[taskId] = false;  // Stop on signal termination too
-                                logEvent(ERROR, "Task " + taskId + " stopped due to cansend signal " + std::to_string(WTERMSIG(status)));
+                                int signal = WTERMSIG(status);
+                                errorMsg = "Task " + taskId + " stopped: cansend terminated by signal " + std::to_string(signal);
+                                hasError = true;
+                                logEvent(ERROR, errorMsg);
+                            }
+                            
+                            if (hasError) {
+                                *taskActive[taskId] = false;  // Stop the task
+                                {
+                                    std::lock_guard<std::mutex> lock(globalErrorMutex);
+                                    globalTaskErrors[taskId] = errorMsg;
+                                }
+                                // Send notification to client
+                                std::string notification = "ERROR: " + errorMsg + "\n";
+                                send(new_fd, notification.c_str(), notification.size(), 0);
                             }
                         }
                     }
