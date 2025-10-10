@@ -370,18 +370,70 @@ std::vector<std::string> discoverCanInterfaces() {
             if (entry.is_directory()) {
                 std::string ifaceName = entry.path().filename().string();
                 
-                // Check if it's a CAN device by looking for can_bittiming
-                std::string canPath = entry.path().string() + "/can_bittiming";
+                // Method 1: Check for can_bittiming (physical CAN)
+                std::string canBittimingPath = entry.path().string() + "/can_bittiming";
                 
-                if (std::filesystem::exists(canPath)) {
+                // Method 2: Check for type file containing "can" (works for vcan)
+                std::string typePath = entry.path().string() + "/type";
+                
+                // Method 3: Check if interface name starts with "can" or "vcan"
+                bool nameMatch = ifaceName.starts_with("can") || ifaceName.starts_with("vcan");
+                
+                // Method 4: Check /sys/class/net/<iface>/device/net/<iface>
+                std::string devicePath = entry.path().string() + "/device";
+                
+                bool isCanInterface = false;
+                std::string detectionMethod;
+                
+                if (std::filesystem::exists(canBittimingPath)) {
+                    isCanInterface = true;
+                    detectionMethod = "can_bittiming";
+                } else if (std::filesystem::exists(typePath)) {
+                    // Read type file
+                    std::ifstream typeFile(typePath);
+                    int type;
+                    if (typeFile >> type) {
+                        // ARPHRD_CAN = 280 (0x118)
+                        if (type == 280) {
+                            isCanInterface = true;
+                            detectionMethod = "type=280";
+                        }
+                    }
+                } else if (nameMatch) {
+                    // Final fallback: if name matches, check if it exists via ip command
+                    std::string checkCmd = "ip link show " + ifaceName + " 2>/dev/null | grep -q 'can\\|vcan'";
+                    if (system(checkCmd.c_str()) == 0) {
+                        isCanInterface = true;
+                        detectionMethod = "ip link";
+                    }
+                }
+                
+                if (isCanInterface) {
                     interfaces.push_back(ifaceName);
                     std::string type = ifaceName.starts_with("vcan") ? "virtual" : "physical";
-                    logEvent(DEBUG, "Discovered " + type + " CAN interface: " + ifaceName);
+                    logEvent(DEBUG, "Discovered " + type + " CAN interface: " + ifaceName + " (method: " + detectionMethod + ")");
                 }
             }
         }
     } catch (const std::exception& e) {
         logEvent(ERROR, "Error discovering CAN interfaces: " + std::string(e.what()));
+    }
+    
+    // Additional fallback: Parse output of 'ip link show type can'
+    if (interfaces.empty()) {
+        logEvent(DEBUG, "Attempting CAN discovery via 'ip link' command");
+        FILE* pipe = popen("ip -o link show 2>/dev/null | grep -E 'can|vcan' | awk '{print $2}' | sed 's/:$//'", "r");
+        if (pipe) {
+            char buffer[256];
+            while (fgets(buffer, sizeof(buffer), pipe) != nullptr) {
+                std::string iface = trim(std::string(buffer));
+                if (!iface.empty() && std::find(interfaces.begin(), interfaces.end(), iface) == interfaces.end()) {
+                    interfaces.push_back(iface);
+                    logEvent(DEBUG, "Discovered CAN interface via ip command: " + iface);
+                }
+            }
+            pclose(pipe);
+        }
     }
     
     // Sort interfaces for consistent ordering (can0, can1, vcan0, vcan1, etc.)
