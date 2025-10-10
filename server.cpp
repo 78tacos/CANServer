@@ -612,8 +612,8 @@ int main(int argc, char* argv[]) {
                 send(new_fd, "Server restart not implemented yet.\n", 36, 0);
             };
 
-            commandMap["KILL_THREAD "] = [&](const std::string& msg) { // kills threads but that's not so useful with a pool
-                std::string threadIdStr = msg.substr(12);
+            commandMap["KILL_THREAD "] = [&](const std::string& msg) {
+                std::string threadIdStr = trim(msg.substr(12));
                 try {
                     std::thread::id threadId = std::thread::id(std::stoull(threadIdStr));
                     registry.remove(threadId);
@@ -626,7 +626,7 @@ int main(int argc, char* argv[]) {
             };
 
             commandMap["SET_LOG_LEVEL "] = [&](const std::string& msg) {
-                std::string levelStr = msg.substr(14);
+                std::string levelStr = trim(msg.substr(14));
                 if (levelStr == "DEBUG") {
                     log_level = DEBUG;
                     log_level_str = "DEBUG";
@@ -649,22 +649,20 @@ int main(int argc, char* argv[]) {
             };
 
             commandMap["PAUSE "] = [&](const std::string& msg) {
-                std::string taskId = msg.substr(6);
+                std::string taskId = trim(msg.substr(6));
                 if (taskPauses.count(taskId)) {
                     *taskPauses[taskId] = true;
                     send(new_fd, ("Paused " + taskId + "\n").c_str(), ("Paused " + taskId + "\n").size(), 0);
-                    // maybe send msg and log if already paused
                 } else {
                     send(new_fd, "Task not found\n", 15, 0);
                 }
             };
 
             commandMap["RESUME "] = [&](const std::string& msg) {
-                std::string taskId = msg.substr(7);
+                std::string taskId = trim(msg.substr(7));
                 if (taskPauses.count(taskId)) {
                     *taskPauses[taskId] = false;
                     send(new_fd, ("Resumed " + taskId + "\n").c_str(), ("Resumed " + taskId + "\n").size(), 0);
-                    //maybe send msg and log if already running
                 } else {
                     send(new_fd, "Task not found\n", 15, 0);
                 }
@@ -699,8 +697,8 @@ int main(int argc, char* argv[]) {
                 send(new_fd, response.c_str(), response.size(), 0);
             };
 
-            commandMap["KILL_TASK "] = [&](const std::string& msg) { //AKA STOP
-                std::string taskId = msg.substr(10);  // "KILL_TASK " is 10 chars
+            commandMap["KILL_TASK "] = [&](const std::string& msg) {
+                std::string taskId = trim(msg.substr(10));  // "KILL_TASK " is 10 chars
                 if (taskActive.count(taskId)) {
                     *taskActive[taskId] = false;  // Stop rescheduling
                     taskPauses.erase(taskId);
