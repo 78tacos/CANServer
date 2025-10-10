@@ -37,32 +37,37 @@
  * - LIST_TASKS : Lists active tasks with status.
  * - KILL_TASK <task_id> : Stops and removes a task.
  * - KILL_ALL_TASKS : Stops all tasks.
- * - cansend <interface> <id#data> <time_ms> [priority] : Schedules recurring CAN message sends.
+ * - LIST_CAN_INTERFACES : Lists available CAN interfaces.
+ * - REFRESH_CAN_INTERFACES : Rediscover CAN interfaces on the system.
+ * - CANSEND#<interface>#<id#data>#<time_ms> [priority] : Schedules recurring CAN message sends.
  *
  * Dependencies: Requires CAN utilities (e.g., cansend command), POSIX threads, sockets.
  * Thread safety: Uses mutexes for shared data structures like ThreadRegistry and ThreadPool.
  */
-/*
+/* priority of todos: 1 high, 2 medium, 3 low
 
-Todo: add license stuff, maybe add candump-like features to ui
-add resource monitoring to send to client ui
-//update frontend info "message" <- forgot what I meant here
-maybe add (automatic and manual) check for all busses available to system and send message to client
+TODOS:
+1 add license stuff
+1 timer of 0 means one-shot message (wip)
+1 make one-shot messages have a button to manually send. keep them there but do not reschedule them until sended
 
-deadline doesn't seem to work with precision. effectively just sleep
+2 maybe add (automatic and manual) check for all busses available to system and send message to client
+2 add button for the above manual bus check in GUI
+2 handle cansend errors even more/better
+2 if checking for dead task (LIST_TASKS/UPDATE), return something useful
+2 if trying to pause/resume/kill a non-existent task, return something useful
 
-bus goes in config file
-status at the end
-if checking for dead task (LIST_TASKS/UPDATE), return something useful
-if trying to pause/resume/kill a non-existent task, return something useful
+3 deadline doesn't seem to work with enough precision. effectively just sleep
+3 make a sequence of one-shots for a simulation of a scenario (Frontend feature idea, maybe already implemented)
+3 add feature to restart server from client
+3 add client window for server log viewing
+3 update frontend info "message" <- forgot what I meant here
 
-//add feature to restart server from client
-add client window for server log viewing
-handle cansend errors
-add error handling for wrong port used when connecting client in ui
-
-polish:
+POLISH:
 make sending timer more accurate
+maybe add candump-like features to ui
+add resource monitoring to send to client ui
+
 */
 
 
@@ -122,7 +127,7 @@ struct ThreadInfo {
     std::thread::id id;
     std::string name;
     std::string status;
-    std::chrono::high_resolution_clock::time_point start_time;  // Changed from steady_clock
+    std::chrono::steady_clock::time_point start_time;  // Changed to steady_clock
 };
 
 /**
@@ -154,7 +159,7 @@ public:
         info.id = id;
         info.name = name;
         info.status = "running";
-        info.start_time = std::chrono::high_resolution_clock::now();  // Changed from steady_clock
+        info.start_time = std::chrono::steady_clock::now();  // Changed to steady_clock
         threads.push_back(info);
     }
 
@@ -195,7 +200,7 @@ std::mutex globalPidMutex;  // Protect the global map
 std::unordered_map<std::string, std::string> globalTaskErrors;
 std::mutex globalErrorMutex;
 
-// Signal handler for SIGCHLD - now only for logging, reaping handled in client threads
+// Signal handler for SIGCHLD - now only for logging, reaping handled in tasks
 void sigchld_handler(int s) {
     (void)s;
     /* // Removed waitpid loop to avoid conflicts
@@ -234,7 +239,7 @@ void logEvent(int level, const std::string& message) { //logging with hierarchy
         return; // Skip logging if message severity is below configured log_level
     }
     std::ofstream log("server.log", std::ios::app);
-    auto now = std::chrono::system_clock::now();  // Unchanged (system_clock for timestamps)
+    auto now = std::chrono::system_clock::now(); 
     auto in_time_t = std::chrono::system_clock::to_time_t(now);
     log << "[" << std::put_time(std::localtime(&in_time_t), "%Y-%m-%d %H:%M:%S") << "] [" << level << "] " << message << std::endl;
 }
@@ -260,7 +265,7 @@ public:
         if (n == 0) n = 1;
         for (size_t i = 0; i < n; ++i) {
             threads.emplace_back([this] {
-                registry.add(std::this_thread::get_id(), "thread pool worker");  // Add to registry
+                registry.add(std::this_thread::get_id(), "thread pool worker");
                 for (;;) {
                     Task task;
                     {
@@ -268,7 +273,7 @@ public:
                         while (!stop) {
                             if (!pq.empty()) {
                                 auto next_deadline = pq.top().deadline;
-                                auto now = std::chrono::high_resolution_clock::now();  // Changed from steady_clock
+                                auto now = std::chrono::steady_clock::now();  // Changed to steady_clock
                                 if (next_deadline <= now) {
                                     // Execute task immediately
                                     task = std::move(pq.top());
@@ -279,10 +284,9 @@ public:
                                 } else {
                                     // Wait until deadline or new task
                                     cv.wait_until(lock, next_deadline);
-                                    // Loop again to recheck
                                 }
                             } else {
-                                cv.wait(lock);  // Wait for new tasks
+                                cv.wait(lock);
                             }
                         }
                     }
@@ -297,10 +301,9 @@ public:
         enqueue_impl(std::chrono::high_resolution_clock::time_point::max(), priority, false, std::forward<F>(f));
     }
 
-    // Enqueue with an absolute deadline (high_resolution_clock::time_point). If drop_if_missed==true the task
-    // will be discarded if the worker picks it up after the deadline has passed.
+    // Enqueue with an absolute deadline (steady_clock::time_point)
     template <class F>
-    void enqueue_deadline(std::chrono::high_resolution_clock::time_point deadline,  // Changed from steady_clock
+    void enqueue_deadline(std::chrono::steady_clock::time_point deadline,  // Changed to steady_clock
                           int priority,
                           bool drop_if_missed,
                           F&& f) {
@@ -318,7 +321,7 @@ public:
 
 private:
     struct Task {
-        std::chrono::high_resolution_clock::time_point deadline;  // Changed from steady_clock
+        std::chrono::steady_clock::time_point deadline;  // Changed to steady_clock
         int priority;
         std::size_t seq;
         std::function<void()> func;
@@ -337,7 +340,7 @@ private:
     };
 
     template <class F>
-    void enqueue_impl(std::chrono::high_resolution_clock::time_point deadline,  // Changed from steady_clock
+    void enqueue_impl(std::chrono::steady_clock::time_point deadline,  // Changed to steady_clock
                       int priority,
                       bool drop_if_missed,
                       F&& f) {
@@ -459,7 +462,8 @@ int main(int argc, char* argv[]) {
     int yes = 1;
     char s[INET6_ADDRSTRLEN];
     int rv;
- 
+
+    int configuredWorkerCount = 1;
 
     std::memset(&hints, 0, sizeof hints);
     hints.ai_family = AF_UNSPEC;
@@ -507,6 +511,20 @@ int main(int argc, char* argv[]) {
                 log_level_str = "ERROR";
             }
             logEvent(DEBUG, "Log level set to " + log_level_str);
+        }
+        else if (lineView.substr(0, 15) == "WORKER_THREADS=") {
+            std::string workerThreadsStr = trim(std::string(lineView.substr(15)));
+            try {
+                int wt = std::stoi(workerThreadsStr);
+                if (wt >= 1) {
+                    configuredWorkerCount = wt;
+                    logEvent(DEBUG, "Worker threads set to " + std::to_string(configuredWorkerCount));
+                } else {
+                    logEvent(WARNING, "Invalid WORKER_THREADS value '" + workerThreadsStr + "', must be positive integer. Using default.");
+                }
+            } catch (const std::exception& e) {
+                logEvent(WARNING, "Error parsing WORKER_THREADS value '" + workerThreadsStr + "': " + e.what() + ". Using default.");
+            }
         }
     }
     configFile.close();
@@ -579,7 +597,7 @@ int main(int argc, char* argv[]) {
     logEvent(INFO, "server: waiting for connections...");
     std::cout << "server: waiting for connections...\n";
 
-    ThreadPool pool(std::max<size_t>(1, std::min<size_t>(2, std::thread::hardware_concurrency()))); // prefer 2 threads, but at least 1
+    ThreadPool pool(std::max<size_t>(1, std::min<size_t>(configuredWorkerCount, std::thread::hardware_concurrency()))); // if it doesn't support more threads, at least 1 thread
 
     // Discover available CAN interfaces
     availableCanInterfaces = discoverCanInterfaces();
@@ -619,7 +637,7 @@ int main(int argc, char* argv[]) {
             info.id = std::this_thread::get_id();
             info.name = "client handler for " + std::string(s);
             info.status = "running";
-            info.start_time = std::chrono::high_resolution_clock::now();  // Changed from steady_clock but might change back
+            info.start_time = std::chrono::steady_clock::now();  // Changed to steady_clock
             std::array<char, MAXDATASIZE> buf;
             int numbytes;
             bool niceShutdown = false;
@@ -822,7 +840,7 @@ int main(int argc, char* argv[]) {
                 int interval = ct; // snapshot the interval
 
                 auto enqueueRecurring = [&pool, interval, priority, recurring]() {
-                    pool.enqueue_deadline(std::chrono::high_resolution_clock::now() + std::chrono::milliseconds(interval),
+                    pool.enqueue_deadline(std::chrono::steady_clock::now() + std::chrono::milliseconds(interval),  // Changed to steady_clock
                                           priority,
                                           false,
                                           [recurring]() {
@@ -836,21 +854,66 @@ int main(int argc, char* argv[]) {
 
                 // Capture the shared_ptrs by value, not by accessing maps
                 *recurring = [recurring, m, interval, &pool, priority, &clientPids, taskId, pauseFlag, activeFlag, enqueueRecurring]() mutable {
-                    if (!*activeFlag) return;  // Use captured shared_ptr directly
+                    if (!*activeFlag) return;
                     
-                    if (!*pauseFlag) {  // Use captured shared_ptr directly
+                    if (!*pauseFlag) {
                         pid_t pid = fork();
                         if (pid == 0) {
+                            // Child: execute cansend
                             execl("/bin/sh", "sh", "-c", m.c_str(), NULL);
                             _exit(1);
                         } else if (pid > 0) {
+                            // Parent: track PID for error monitoring
                             {
                                 std::lock_guard<std::mutex> lock(globalPidMutex);
                                 globalPidToTaskId[pid] = taskId;
                             }
-                            // Note: Don't add to clientPids here as it's accessed from different thread
+                            
+                            // CRITICAL FIX: Reap the process immediately after tracking
+                            // This prevents zombie accumulation for fast-repeating tasks
+                            int status;
+                            pid_t result = waitpid(pid, &status, 0);  // Block until child exits
+                            
+                            // Check for errors after reaping
+                            if (result > 0) {
+                                bool hasError = false;
+                                std::string errorMsg;
+                                
+                                if (WIFEXITED(status) && WEXITSTATUS(status) != 0) {
+                                    errorMsg = "cansend failed with exit code " + std::to_string(WEXITSTATUS(status));
+                                    hasError = true;
+                                } else if (WIFSIGNALED(status)) {
+                                    errorMsg = "cansend terminated by signal " + std::to_string(WTERMSIG(status));
+                                    hasError = true;
+                                }
+                                
+                                if (hasError) {
+                                    *activeFlag = false;  // Stop task on error
+                                    logEvent(ERROR, "Task " + taskId + " stopped: " + errorMsg);
+                                    
+                                    // Store error for LIST_TASKS
+                                    {
+                                        std::lock_guard<std::mutex> lock(globalErrorMutex);
+                                        globalTaskErrors[taskId] = errorMsg;
+                                    }
+                                }
+                            }
+                            
+                            // Clean up PID tracking
+                            {
+                                std::lock_guard<std::mutex> lock(globalPidMutex);
+                                globalPidToTaskId.erase(pid);
+                            }
                         } else {
+                            // Fork failed
                             logEvent(ERROR, "fork() failed for task " + taskId + ": " + std::string(strerror(errno)));
+                            
+                            // Stop task if fork repeatedly fails
+                            if (errno == EAGAIN || errno == ENOMEM) {
+                                *activeFlag = false;
+                                std::lock_guard<std::mutex> lock(globalErrorMutex);
+                                globalTaskErrors[taskId] = "fork() failed: system resource limit reached";
+                            }
                         }
                     }
                     
@@ -864,59 +927,6 @@ int main(int argc, char* argv[]) {
             };
 
             while (!niceShutdown) {
-                // Check for exited child processes and stop tasks on errors
-                {
-                    int status;
-                    pid_t pid;
-                    while ((pid = waitpid(-1, &status, WNOHANG)) > 0) {
-                        std::string taskId;
-                        {
-                            std::lock_guard<std::mutex> lock(globalPidMutex);
-                            auto it = globalPidToTaskId.find(pid);
-                            if (it != globalPidToTaskId.end()) {
-                                taskId = it->second;
-                                globalPidToTaskId.erase(it);
-                            }
-                        }
-                        if (!taskId.empty() && taskActive.count(taskId)) {
-                            std::string errorMsg;
-                            bool hasError = false;
-                            
-                            if (WIFEXITED(status) && WEXITSTATUS(status) != 0) {
-                                int exitCode = WEXITSTATUS(status);
-                                errorMsg = "cansend failed with exit code " + std::to_string(exitCode);
-                                hasError = true;
-                            } else if (WIFSIGNALED(status)) {
-                                int signal = WTERMSIG(status);
-                                errorMsg = "cansend terminated by signal " + std::to_string(signal);
-                                hasError = true;
-                            }
-                            
-                            if (hasError) {
-                                // Get task details before cleanup
-                                std::string taskDetail = taskDetails[taskId];
-                                
-                                // Stop the task and clean up
-                                *taskActive[taskId] = false;
-                                taskPauses.erase(taskId);
-                                taskDetails.erase(taskId);
-                                taskActive.erase(taskId);
-                                
-                                // Log the error
-                                std::string fullError = "Task " + taskId + " stopped: " + errorMsg + " (" + taskDetail + ")";
-                                logEvent(ERROR, fullError);
-                                
-                                // Send notification to client
-                                std::string notification = "ERROR: Task " + taskId + " stopped - " + errorMsg + "\n";
-                                ssize_t sent = send(new_fd, notification.c_str(), notification.size(), MSG_NOSIGNAL);
-                                if (sent == -1) {
-                                    logEvent(WARNING, "Failed to send error notification to client: " + std::string(strerror(errno)));
-                                }
-                            }
-                        }
-                    }
-                }
-
                 if ((numbytes = recv(new_fd, buf.data(), MAXDATASIZE - 1, 0)) == -1) {
                     logEvent(ERROR, "recv");
                     perror("recv");
@@ -1006,6 +1016,30 @@ int main(int argc, char* argv[]) {
                         logEvent(WARNING, "Unknown command from " + std::string(s) + ": " + receivedMsg);
                         std::string response = "Unknown command: " + receivedMsg;
                         send(new_fd, response.c_str(), response.size(), 0);
+                    }
+                }
+            }
+
+            // Clean up all tasks on disconnect
+            logEvent(INFO, "Cleaning up tasks for disconnected client: " + std::string(s));
+            for (auto& [id, active] : taskActive) {
+                *active = false;  // Stop all task rescheduling
+                logEvent(DEBUG, "Stopped task " + id + " for client " + std::string(s));
+            }
+            taskPauses.clear();
+            taskDetails.clear();
+            taskActive.clear();
+            {
+                std::lock_guard<std::mutex> lock(globalErrorMutex);
+                // Remove error messages for this client's tasks
+                for (auto it = globalTaskErrors.begin(); it != globalTaskErrors.end();) {
+                    if (it->first.find("task_") == 0) {
+                        // Check if this task belongs to this client by checking if it's in taskActive
+                        // Since taskActive is already cleared, we can't verify, so just log
+                        logEvent(DEBUG, "Cleaned up error for task " + it->first);
+                        it = globalTaskErrors.erase(it);
+                    } else {
+                        ++it;
                     }
                 }
             }
