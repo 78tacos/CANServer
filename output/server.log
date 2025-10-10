@@ -274,3 +274,27 @@
 [2025-10-08 21:16:11] [10] Received REFRESH_CAN_INTERFACES command from 127.0.0.1
 [2025-10-08 21:16:18] [5] Received from 127.0.0.1: CANSEND#123#DEADBEEF#100#can0
 [2025-10-08 21:16:18] [30] Invalid CAN interface 'can0' requested by 127.0.0.1
+[2025-10-09 14:49:49] [10] Client disconnected: 127.0.0.1
+[2025-10-09 14:50:30] [10] Connection from: 127.0.0.1
+[2025-10-09 14:50:33] [5] Received from 127.0.0.1: CANSEND#123#00000000#1000#vcan0
+[2025-10-09 14:50:33] [30] Invalid CAN interface 'vcan0' requested by 127.0.0.1
+[2025-10-09 14:50:42] [5] Received from 127.0.0.1: LIST_CAN_INTERFACS
+[2025-10-09 14:50:42] [20] Unknown command from 127.0.0.1: LIST_CAN_INTERFACS
+[2025-10-09 14:50:52] [5] Received from 127.0.0.1:  LIST_CAN_INTERFACES
+[2025-10-09 14:50:52] [20] Unknown command from 127.0.0.1:  LIST_CAN_INTERFACES
+[2025-10-09 14:51:01] [5] Received from 127.0.0.1: LIST_CAN_INTERFACES
+[2025-10-09 14:51:01] [10] Received LIST_CAN_INTERFACES command from 127.0.0.1
+[2025-10-09 14:53:46] [10] Client disconnected: 127.0.0.1
+[2025-10-09 14:53:47] [10] Connection from: 127.0.0.1
+[2025-10-09 14:53:56] [5] Received from 127.0.0.1: CANSEND#123#00000000#1000#vcan0
+[2025-10-09 14:53:56] [30] Invalid CAN interface 'vcan0' requested by 127.0.0.1
+[2025-10-09 15:23:52] [5] Received from 127.0.0.1: CANSEND#123#00000000#1000#vcan0
+[2025-10-09 15:23:52] [30] Invalid CAN interface 'vcan0' requested by 127.0.0.1
+[2025-10-09 15:27:22] [10] Client disconnected: 127.0.0.1
+[2025-10-09 15:27:24] [10] Connection from: 127.0.0.1
+[2025-10-09 15:27:25] [5] Received from 127.0.0.1: test
+[2025-10-09 15:27:25] [20] Unknown command from 127.0.0.1: test
+[2025-10-09 15:27:28] [10] Client disconnected: 127.0.0.1
+[2025-10-09 15:29:56] [5] Log level set to DEBUG
+[2025-10-09 15:29:56] [10] server: waiting for connections...
+[2025-10-09 15:29:56] [20] No CAN interfaces found on system
