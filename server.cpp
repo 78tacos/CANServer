@@ -370,14 +370,10 @@ std::vector<std::string> discoverCanInterfaces() {
             if (entry.is_directory()) {
                 std::string ifaceName = entry.path().filename().string();
                 
-                // Check if it's a CAN or vcan device by looking for can_bittiming
+                // Check if it's a CAN device by looking for can_bittiming
                 std::string canPath = entry.path().string() + "/can_bittiming";
                 
-                // Also explicitly check if name starts with "can" or "vcan"
-                bool isCAN = std::filesystem::exists(canPath);
-                bool hasCanPrefix = ifaceName.starts_with("can") || ifaceName.starts_with("vcan");
-                
-                if (isCAN && hasCanPrefix) {
+                if (std::filesystem::exists(canPath)) {
                     interfaces.push_back(ifaceName);
                     std::string type = ifaceName.starts_with("vcan") ? "virtual" : "physical";
                     logEvent(DEBUG, "Discovered " + type + " CAN interface: " + ifaceName);
@@ -915,7 +911,6 @@ int main(int argc, char* argv[]) {
                             std::string canBus = parts[3];
 
                             // Validate CAN interface
-                            /*
                             if (!isValidCanInterface(canBus)) {
                                 std::string errorMsg = "ERROR: CAN interface '" + canBus + 
                                                       "' is not available. Use LIST_CAN_INTERFACES to see available interfaces.\n";
@@ -923,7 +918,6 @@ int main(int argc, char* argv[]) {
                                 send(new_fd, errorMsg.c_str(), errorMsg.size(), 0);
                                 continue;
                             }
-                            */
 
                             if (canId.starts_with("0x") || canId.starts_with("0X")) {
                                 canId = canId.substr(2);
