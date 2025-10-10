@@ -298,3 +298,13 @@
 [2025-10-09 15:29:56] [5] Log level set to DEBUG
 [2025-10-09 15:29:56] [10] server: waiting for connections...
 [2025-10-09 15:29:56] [20] No CAN interfaces found on system
+[2025-10-09 16:48:32] [5] Log level set to DEBUG
+[2025-10-09 16:48:32] [10] server: waiting for connections...
+[2025-10-09 16:48:32] [20] No CAN interfaces found on system
+[2025-10-09 16:48:35] [10] Connection from: 127.0.0.1
+[2025-10-09 16:48:54] [5] Received from 127.0.0.1: CANSEND#123#DEADBEEF#1000
+[2025-10-09 16:48:54] [30] Invalid CANSEND syntax from 127.0.0.1
+[2025-10-09 16:49:10] [5] Received from 127.0.0.1: CANSEND#123#DEADBEEF#1000#vcan0
+[2025-10-09 16:49:10] [10] Parsed CANSEND: vcan0 123#DEADBEEF every 1000ms priority 5 from 127.0.0.1
+[2025-10-09 16:49:17] [5] Received from 127.0.0.1: LIST_TASKS
+[2025-10-09 16:49:17] [30] Task task_0 stopped: cansend failed with exit code 1 (cansend vcan0 123#DEADBEEF every 1000ms priority 5)

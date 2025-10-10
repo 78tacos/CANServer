@@ -4,7 +4,7 @@ client
 *.exe
 *.out
 *.app
-output/*.*
+output/
 
 # Object files
 *.o
