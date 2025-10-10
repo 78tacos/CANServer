@@ -2,12 +2,25 @@
   "version": "2.0.0",
   "tasks": [
     {
-      "type": "shell",
       "label": "build",
+      "type": "shell",
       "command": "make",
-      "args": [
-        "all"
-      ]
+      "args": ["all"],
+      "group": {
+        "kind": "build",
+        "isDefault": true
+      }
+    },
+    {
+      "label": "test",
+      "type": "shell",
+      "command": "make",
+      "args": ["test"],
+      "group": {
+        "kind": "test",
+        "isDefault": true
+      },
+      "problemMatcher": []
     }
   ]
 }
