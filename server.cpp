@@ -37,9 +37,9 @@
  * - LIST_TASKS : Lists active tasks with status.
  * - KILL_TASK <task_id> : Stops and removes a task.
  * - KILL_ALL_TASKS : Stops all tasks.
- * - LIST_CAN_INTERFACES : Lists available CAN interfaces.
- * - REFRESH_CAN_INTERFACES : Rediscover CAN interfaces on the system.
- * - CANSEND#<interface>#<id#data>#<time_ms> [priority] : Schedules recurring CAN message sends.
+ * - LIST_CAN_INTERFACES : Lists available CAN interfaces (auto-refreshes before listing).
+ * - CANSEND#<id#data>#<time_ms>#<interface> [priority] : Schedules recurring CAN message sends.
+ * - SEND_TASK#<id#data>#<delay_ms>#<interface> : Schedules a one-shot CAN message send after delay_ms milliseconds.
  *
  * Dependencies: Requires CAN utilities (e.g., cansend command), POSIX threads, sockets.
  * Thread safety: Uses mutexes for shared data structures like ThreadRegistry and ThreadPool.
@@ -48,7 +48,12 @@
 
 TODOS:
 1 add license stuff
-1 timer of 0 means one-shot message (wip)
+1 timer of 0 means one-shot message (wip) needs testing
+
+idea:
+one-shot tasks will be treated like paused tasks, they will not be rescheduled until resumed/sent manually
+resume will be used to send them again, they will stay in the maps
+
 1 make one-shot messages have a button to manually send. keep them there but do not reschedule them until sended
 
 2 maybe add (automatic and manual) check for all busses available to system and send message to client
@@ -64,7 +69,7 @@ TODOS:
 3 update frontend info "message" <- forgot what I meant here
 
 POLISH:
-make sending timer more accurate
+make scheduling timer more accurate
 maybe add candump-like features to ui
 add resource monitoring to send to client ui
 
@@ -298,7 +303,7 @@ public:
     // Enqueue a normal (no-deadline) task with optional priority (higher = run earlier when deadlines tie)
     template <class F>
     void enqueue(int priority, F&& f) {
-        enqueue_impl(std::chrono::high_resolution_clock::time_point::max(), priority, false, std::forward<F>(f));
+        enqueue_impl(std::chrono::steady_clock::time_point::max(), priority, false, std::forward<F>(f));
     }
 
     // Enqueue with an absolute deadline (steady_clock::time_point)
@@ -642,7 +647,7 @@ int main(int argc, char* argv[]) {
             int numbytes;
             bool niceShutdown = false;
             int priority = 5; //needs to be implemented in the ui
-            int canTime; //time in ms between CAN messages sending
+            // `time_ms` parsed from commands determines recurring interval or single-shot delay
             std::string canInterface; //can0, vcan1, etc.
             std::string canIdStr; //CAN ID and data in hex
             std::vector<pid_t> clientPids;  // Track PIDs of spawned processes
@@ -801,10 +806,14 @@ int main(int argc, char* argv[]) {
                 std::string response;
                 {
                     std::lock_guard<std::mutex> lock(canInterfacesMutex);
+                    // Refresh interfaces before listing to ensure current state
+                    availableCanInterfaces = discoverCanInterfaces();
+                    
                     if (availableCanInterfaces.empty()) {
                         response = "No CAN interfaces available\n";
                     } else {
-                        response = "Available CAN interfaces:\n";
+                        response = "Available CAN interfaces (" + 
+                                  std::to_string(availableCanInterfaces.size()) + "):\n";
                         for (const auto& iface : availableCanInterfaces) {
                             response += "  " + iface + "\n";
                         }
@@ -813,16 +822,60 @@ int main(int argc, char* argv[]) {
                 send(new_fd, response.c_str(), response.size(), 0);
             };
 
-            commandMap["REFRESH_CAN_INTERFACES"] = [&](const std::string&) {
-                logEvent(INFO, "Received REFRESH_CAN_INTERFACES command from " + std::string(s));
-                {
-                    std::lock_guard<std::mutex> lock(canInterfacesMutex);
-                    availableCanInterfaces = discoverCanInterfaces();
+            auto runCansendCommand = [&](const std::string& cmd,
+                                         const std::string& taskId,
+                                         const std::shared_ptr<bool>& activeFlag) -> bool {
+                pid_t pid = fork();
+                if (pid == 0) {
+                    execl("/bin/sh", "sh", "-c", cmd.c_str(), NULL);
+                    _exit(1);
+                } else if (pid > 0) {
+                    {
+                        std::lock_guard<std::mutex> lock(globalPidMutex);
+                        globalPidToTaskId[pid] = taskId;
+                    }
+
+                    int status;
+                    pid_t result = waitpid(pid, &status, 0);
+                    bool success = true;
+                    std::string errorMsg;
+
+                    if (result > 0) {
+                        if (WIFEXITED(status) && WEXITSTATUS(status) != 0) {
+                            success = false;
+                            errorMsg = "cansend failed with exit code " + std::to_string(WEXITSTATUS(status));
+                        } else if (WIFSIGNALED(status)) {
+                            success = false;
+                            errorMsg = "cansend terminated by signal " + std::to_string(WTERMSIG(status));
+                        }
+                    } else {
+                        success = false;
+                        errorMsg = "waitpid failed: " + std::string(strerror(errno));
+                    }
+
+                    {
+                        std::lock_guard<std::mutex> lock(globalPidMutex);
+                        globalPidToTaskId.erase(pid);
+                    }
+
+                    if (!success) {
+                        *activeFlag = false;
+                        logEvent(ERROR, "Task " + taskId + " stopped: " + errorMsg);
+                        std::lock_guard<std::mutex> lock(globalErrorMutex);
+                        globalTaskErrors[taskId] = errorMsg;
+                    }
+
+                    return success;
+                } else {
+                    std::string errorMsg = "fork() failed for task " + taskId + ": " + std::string(strerror(errno));
+                    logEvent(ERROR, errorMsg);
+                    *activeFlag = false;
+                    {
+                        std::lock_guard<std::mutex> lock(globalErrorMutex);
+                        globalTaskErrors[taskId] = "fork() failed: system resource limit reached";
+                    }
+                    return false;
                 }
-                std::string response = "CAN interfaces refreshed. Found " + 
-                                      std::to_string(availableCanInterfaces.size()) + 
-                                      " interface(s)\n";
-                send(new_fd, response.c_str(), response.size(), 0);
             };
 
             auto setupRecurringCansend = [&](const std::string& cmd, int ct, int priority, ThreadPool& pool, std::vector<pid_t>& clientPids, std::unordered_map<std::string, std::shared_ptr<bool>>& taskPauses, std::unordered_map<std::string, std::shared_ptr<bool>>& taskActive, std::unordered_map<std::string, std::string>& taskDetails, std::atomic<int>& taskCounter) -> std::string {
@@ -853,68 +906,11 @@ int main(int argc, char* argv[]) {
                 };
 
                 // Capture the shared_ptrs by value, not by accessing maps
-                *recurring = [recurring, m, interval, &pool, priority, &clientPids, taskId, pauseFlag, activeFlag, enqueueRecurring]() mutable {
+                *recurring = [recurring, m, interval, &pool, priority, &clientPids, taskId, pauseFlag, activeFlag, enqueueRecurring, &runCansendCommand]() mutable {
                     if (!*activeFlag) return;
                     
                     if (!*pauseFlag) {
-                        pid_t pid = fork();
-                        if (pid == 0) {
-                            // Child: execute cansend
-                            execl("/bin/sh", "sh", "-c", m.c_str(), NULL);
-                            _exit(1);
-                        } else if (pid > 0) {
-                            // Parent: track PID for error monitoring
-                            {
-                                std::lock_guard<std::mutex> lock(globalPidMutex);
-                                globalPidToTaskId[pid] = taskId;
-                            }
-                            
-                            // CRITICAL FIX: Reap the process immediately after tracking
-                            // This prevents zombie accumulation for fast-repeating tasks
-                            int status;
-                            pid_t result = waitpid(pid, &status, 0);  // Block until child exits
-                            
-                            // Check for errors after reaping
-                            if (result > 0) {
-                                bool hasError = false;
-                                std::string errorMsg;
-                                
-                                if (WIFEXITED(status) && WEXITSTATUS(status) != 0) {
-                                    errorMsg = "cansend failed with exit code " + std::to_string(WEXITSTATUS(status));
-                                    hasError = true;
-                                } else if (WIFSIGNALED(status)) {
-                                    errorMsg = "cansend terminated by signal " + std::to_string(WTERMSIG(status));
-                                    hasError = true;
-                                }
-                                
-                                if (hasError) {
-                                    *activeFlag = false;  // Stop task on error
-                                    logEvent(ERROR, "Task " + taskId + " stopped: " + errorMsg);
-                                    
-                                    // Store error for LIST_TASKS
-                                    {
-                                        std::lock_guard<std::mutex> lock(globalErrorMutex);
-                                        globalTaskErrors[taskId] = errorMsg;
-                                    }
-                                }
-                            }
-                            
-                            // Clean up PID tracking
-                            {
-                                std::lock_guard<std::mutex> lock(globalPidMutex);
-                                globalPidToTaskId.erase(pid);
-                            }
-                        } else {
-                            // Fork failed
-                            logEvent(ERROR, "fork() failed for task " + taskId + ": " + std::string(strerror(errno)));
-                            
-                            // Stop task if fork repeatedly fails
-                            if (errno == EAGAIN || errno == ENOMEM) {
-                                *activeFlag = false;
-                                std::lock_guard<std::mutex> lock(globalErrorMutex);
-                                globalTaskErrors[taskId] = "fork() failed: system resource limit reached";
-                            }
-                        }
+                        runCansendCommand(m, taskId, activeFlag);
                     }
                     
                     if (*activeFlag) {
@@ -924,6 +920,137 @@ int main(int argc, char* argv[]) {
 
                 enqueueRecurring();
                 return taskId;
+            };
+
+            auto setupSingleShotCansend = [&](const std::string& cmd,
+                                              int delayMs,
+                                              int priority,
+                                              ThreadPool& pool,
+                                              std::unordered_map<std::string, std::shared_ptr<bool>>& taskPauses,
+                                              std::unordered_map<std::string, std::shared_ptr<bool>>& taskActive,
+                                              std::unordered_map<std::string, std::string>& taskDetails,
+                                              std::atomic<int>& taskCounter) -> std::string {
+                std::string taskId = "task_" + std::to_string(taskCounter++);
+                auto pauseFlag = std::make_shared<bool>(false);
+                auto activeFlag = std::make_shared<bool>(true);
+
+                taskPauses[taskId] = pauseFlag;
+                taskActive[taskId] = activeFlag;
+                taskDetails[taskId] = cmd + " once after " + std::to_string(delayMs) + "ms priority " + std::to_string(priority);
+
+                auto singleShot = std::make_shared<std::function<void()>>();
+                *singleShot = [singleShot,
+                               cmd,
+                               taskId,
+                               pauseFlag,
+                               activeFlag,
+                               priority,
+                               &pool,
+                               &taskDetails,
+                               &runCansendCommand]() mutable {
+                    if (!*activeFlag) {
+                        return;
+                    }
+
+                    if (*pauseFlag) {
+                        pool.enqueue_deadline(std::chrono::steady_clock::now() + std::chrono::milliseconds(50),
+                                              priority,
+                                              false,
+                                              [singleShot]() {
+                                                  (*singleShot)();
+                                              });
+                        return;
+                    }
+
+                    bool success = runCansendCommand(cmd, taskId, activeFlag);
+                    if (success) {
+                        *activeFlag = false;
+                        taskDetails[taskId] = cmd + " once (completed)";
+                    } else {
+                        taskDetails[taskId] = cmd + " once (error)";
+                    }
+                };
+
+                pool.enqueue_deadline(std::chrono::steady_clock::now() + std::chrono::milliseconds(delayMs),
+                                      priority,
+                                      false,
+                                      [singleShot]() {
+                                          (*singleShot)();
+                                      });
+
+                return taskId;
+            };
+
+            struct CansendConfig {
+                std::string command;
+                std::string canIdData;
+                std::string canBus;
+                int intervalMs;
+                int priority;
+            };
+
+            auto parseCansendPayload = [&](const std::string& payload,
+                                            int defaultPriority,
+                                            CansendConfig& outConfig,
+                                            std::string& errorMsg) -> bool {
+                std::vector<std::string> parts;
+                std::stringstream ss(payload);
+                std::string part;
+                while (std::getline(ss, part, '#')) {
+                    parts.push_back(trim(part));
+                }
+
+                if (parts.size() < 4) {
+                    errorMsg = "ERROR: Invalid CANSEND syntax. Usage: CANSEND#<id>#<payload>#<time_ms>#<bus> [priority 0-9]\n";
+                    return false;
+                }
+
+                std::string canId = parts[0];
+                std::string canPayload = parts[1];
+                std::string timeStr = parts[2];
+                std::string canBus = parts[3];
+
+                if (canId.starts_with("0x") || canId.starts_with("0X")) {
+                    canId = canId.substr(2);
+                }
+
+                if (timeStr.ends_with("ms")) {
+                    timeStr = timeStr.substr(0, timeStr.size() - 2);
+                }
+
+                int parsedPriority = defaultPriority;
+                if (parts.size() >= 5 && !parts[4].empty()) {
+                    std::string priorityStr = trim(parts[4]);
+                    if (priorityStr.size() == 1 && priorityStr[0] >= '0' && priorityStr[0] <= '9') {
+                        parsedPriority = priorityStr[0] - '0';
+                    }
+                }
+
+                if (!isValidCanInterface(canBus)) {
+                    errorMsg = "ERROR: CAN interface '" + canBus + "' is not available. Use LIST_CAN_INTERFACES to see available interfaces.\n";
+                    return false;
+                }
+
+                int intervalMs;
+                try {
+                    intervalMs = std::stoi(timeStr);
+                } catch (...) {
+                    errorMsg = "ERROR: Invalid time value\n";
+                    return false;
+                }
+
+                if (intervalMs < 0) {
+                    errorMsg = "ERROR: Time value must be non-negative\n";
+                    return false;
+                }
+
+                std::string canIdData = canId + "#" + canPayload;
+                outConfig.command = "cansend " + canBus + " " + canIdData;
+                outConfig.canIdData = canIdData;
+                outConfig.canBus = canBus;
+                outConfig.intervalMs = intervalMs;
+                outConfig.priority = parsedPriority;
+                return true;
             };
 
             while (!niceShutdown) {
@@ -949,69 +1076,34 @@ int main(int argc, char* argv[]) {
                     }
                 }
                 if (!handled) {
-                    if (receivedMsg.rfind("CANSEND#", 0) == 0) {
-                        std::string payload = receivedMsg.substr(8);  // "CANSEND#" is 8 chars
-                        payload = trim(payload);
-
-                        // Parse format: CANSEND#ID#PAYLOAD#TIME#BUS
-                        std::vector<std::string> parts;
-                        std::stringstream ss(payload);
-                        std::string part;
-                        while (std::getline(ss, part, '#')) {
-                            parts.push_back(trim(part));
+                    if (receivedMsg.rfind("SEND_TASK#", 0) == 0) {
+                        std::string payload = trim(receivedMsg.substr(10));
+                        CansendConfig cfg;
+                        std::string errorMsg;
+                        if (!parseCansendPayload(payload, priority, cfg, errorMsg)) {
+                            logEvent(ERROR, "Invalid SEND_TASK payload from " + std::string(s) + ": " + payload);
+                            send(new_fd, errorMsg.c_str(), errorMsg.size(), 0);
+                            continue;
                         }
 
-                        if (parts.size() < 4) {
-                            logEvent(ERROR, "Invalid CANSEND syntax from " + std::string(s));
-                            send(new_fd, "ERROR: Invalid CANSEND syntax. Usage: CANSEND#<id>#<payload>#<time_ms>#<bus> [priority 0-9]\n", 93, 0);
-                        } else {
-                            std::string canId = parts[0];
-                            std::string canPayload = parts[1];
-                            std::string timeStr = parts[2];
-                            std::string canBus = parts[3];
-
-                            // Validate CAN interface
-                            if (!isValidCanInterface(canBus)) {
-                                std::string errorMsg = "ERROR: CAN interface '" + canBus + 
-                                                      "' is not available. Use LIST_CAN_INTERFACES to see available interfaces.\n";
-                                logEvent(ERROR, "Invalid CAN interface '" + canBus + "' requested by " + std::string(s));
-                                send(new_fd, errorMsg.c_str(), errorMsg.size(), 0);
-                                continue;
-                            }
-
-                            if (canId.starts_with("0x") || canId.starts_with("0X")) {
-                                canId = canId.substr(2);
-                            }
-
-                            if (timeStr.ends_with("ms")) {
-                                timeStr = timeStr.substr(0, timeStr.size() - 2);
-                            }
-
-                            // Optional priority (default to 5)
-                            int parsedPriority = priority;
-                            if (parts.size() >= 5 && !parts[4].empty()) {
-                                std::string priorityStr = trim(parts[4]);
-                                if (priorityStr.size() == 1 && priorityStr[0] >= '0' && priorityStr[0] <= '9') {
-                                    parsedPriority = priorityStr[0] - '0';
-                                }
-                            }
-
-                            try {
-                                canTime = std::stoi(timeStr);
-                                std::string canIdData = canId + "#" + canPayload;
-                                logEvent(INFO, "Parsed CANSEND: " + canBus + " " + canIdData + " every " + std::to_string(canTime) + "ms priority " + std::to_string(parsedPriority) + " from " + std::string(s));
-                                
-                                // Build cansend command
-                                std::string cmd = "cansend " + canBus + " " + canIdData;
-                                std::string taskId = setupRecurringCansend(cmd, canTime, parsedPriority, pool, clientPids, taskPauses, taskActive, taskDetails, taskCounter);
-                                std::string response = "OK: CANSEND scheduled with task ID: " + taskId + "\n";
-                                send(new_fd, response.c_str(), response.size(), 0);
-                            }
-                            catch (...) {
-                                logEvent(ERROR, "Invalid CANSEND time from " + std::string(s));
-                                send(new_fd, "ERROR: Invalid time value\n", 26, 0);
-                            }
+                        logEvent(INFO, "Parsed SEND_TASK: " + cfg.canBus + " " + cfg.canIdData + " in " + std::to_string(cfg.intervalMs) + "ms priority " + std::to_string(cfg.priority) + " from " + std::string(s));
+                        std::string taskId = setupSingleShotCansend(cfg.command, cfg.intervalMs, cfg.priority, pool, taskPauses, taskActive, taskDetails, taskCounter);
+                        std::string response = "OK: SEND_TASK scheduled with task ID: " + taskId + "\n";
+                        send(new_fd, response.c_str(), response.size(), 0);
+                    } else if (receivedMsg.rfind("CANSEND#", 0) == 0) {
+                        std::string payload = trim(receivedMsg.substr(8));
+                        CansendConfig cfg;
+                        std::string errorMsg;
+                        if (!parseCansendPayload(payload, priority, cfg, errorMsg)) {
+                            logEvent(ERROR, "Invalid CANSEND payload from " + std::string(s) + ": " + payload);
+                            send(new_fd, errorMsg.c_str(), errorMsg.size(), 0);
+                            continue;
                         }
+
+                        logEvent(INFO, "Parsed CANSEND: " + cfg.canBus + " " + cfg.canIdData + " every " + std::to_string(cfg.intervalMs) + "ms priority " + std::to_string(cfg.priority) + " from " + std::string(s));
+                        std::string taskId = setupRecurringCansend(cfg.command, cfg.intervalMs, cfg.priority, pool, clientPids, taskPauses, taskActive, taskDetails, taskCounter);
+                        std::string response = "OK: CANSEND scheduled with task ID: " + taskId + "\n";
+                        send(new_fd, response.c_str(), response.size(), 0);
                     } else {
                         logEvent(WARNING, "Unknown command from " + std::string(s) + ": " + receivedMsg);
                         std::string response = "Unknown command: " + receivedMsg;
