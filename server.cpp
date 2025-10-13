@@ -62,13 +62,17 @@ resume will be used to send them again, they will stay in the maps
 2 if checking for dead task (LIST_TASKS/UPDATE), return something useful
 2 if trying to pause/resume/kill a non-existent task, return something useful
 
-//add feature to restart server from client
-add client window for server log viewing
-handle cansend errors
-add error handling for wrong port used when connecting client in ui
+3 deadline doesn't seem to work with enough precision. effectively just sleep
+3 make a sequence of one-shots for a simulation of a scenario (Frontend feature idea, maybe already implemented)
+3 add feature to restart server from client
+3 add client window for server log viewing
+3 update frontend info "message" <- forgot what I meant here
 
-polish:
-make sending timer more accurate
+POLISH:
+make scheduling timer more accurate
+maybe add candump-like features to ui
+add resource monitoring to send to client ui
+
 */
 
 
@@ -110,11 +114,12 @@ make sending timer more accurate
 // config file variables. parsed in main
 int port = 0;
 std::string log_level_str = "ERROR"; // ERROR by default but overwritten by config file
-int log_level = 30; //INFO == 10, WARNING == 20, ERROR == 30, DEBUG == 5
+int log_level = 30; //INFO == 10, WARNING == 20, ERROR == 30, DEBUG == 5, NOLOG == 100
 const int INFO = 10;
 const int WARNING = 20;
 const int ERROR = 30;
 const int DEBUG = 5;
+const int NOLOG = 100;
 
 // Helper function to trim whitespace and invisible characters from string
 std::string trim(const std::string& str) {
@@ -426,7 +431,7 @@ std::vector<std::string> discoverCanInterfaces() {
     // Additional fallback: Parse output of 'ip link show type can'
     if (interfaces.empty()) {
         logEvent(DEBUG, "Attempting CAN discovery via 'ip link' command");
-        FILE* pipe = popen("ip -o link show 2>/dev/null | grep -E 'can|vcan' | awk '{print $2}' | sed 's/:$//'", "r"); //AI definitely wrote this line lol
+        FILE* pipe = popen("ip -o link show 2>/dev/null | grep -E 'can|vcan' | awk '{print $2}' | sed 's/:$//'", "r");
         if (pipe) {
             char buffer[256];
             while (fgets(buffer, sizeof(buffer), pipe) != nullptr) {
@@ -506,6 +511,8 @@ int main(int argc, char* argv[]) {
                 log_level = WARNING;
             } else if (logLevelStr == "ERROR") {
                 log_level = ERROR;
+            } else if (logLevelStr == "NOLOG") {
+                log_level = NOLOG;
             } else {
                 logEvent(WARNING, "Unknown log level '" + logLevelStr + "', using ERROR");
                 log_level = ERROR;
