@@ -51,13 +51,12 @@ maybe add (automatic and manual) check for all busses available to system and se
 
 deadline doesn't seem to work with precision. effectively just sleep
 
-bus goes in config file
-status at the end
+bus goes in config file?, status flags at the end
 if checking for dead task (LIST_TASKS/UPDATE), return something useful
 if trying to pause/resume/kill a non-existent task, return something useful
 
 //add feature to restart server from client
-add client window for server log viewing
+add client window for server log viewing maybe?
 handle cansend errors
 add error handling for wrong port used when connecting client in ui
 
@@ -422,7 +421,7 @@ std::vector<std::string> discoverCanInterfaces() {
     // Additional fallback: Parse output of 'ip link show type can'
     if (interfaces.empty()) {
         logEvent(DEBUG, "Attempting CAN discovery via 'ip link' command");
-        FILE* pipe = popen("ip -o link show 2>/dev/null | grep -E 'can|vcan' | awk '{print $2}' | sed 's/:$//'", "r");
+        FILE* pipe = popen("ip -o link show 2>/dev/null | grep -E 'can|vcan' | awk '{print $2}' | sed 's/:$//'", "r"); //AI definitely wrote this line lol
         if (pipe) {
             char buffer[256];
             while (fgets(buffer, sizeof(buffer), pipe) != nullptr) {
