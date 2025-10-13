@@ -38,8 +38,8 @@
  * - KILL_TASK <task_id> : Stops and removes a task.
  * - KILL_ALL_TASKS : Stops all tasks.
  * - LIST_CAN_INTERFACES : Lists available CAN interfaces (auto-refreshes before listing).
- * - CANSEND#<id#data>#<time_ms>#<interface> [priority] : Schedules recurring CAN message sends.
- * - SEND_TASK#<id#data>#<delay_ms>#<interface> : Schedules a one-shot CAN message send after delay_ms milliseconds.
+ * - CANSEND#<id#data>#<time_ms>#<interface> [priority] : Schedules recurring CAN message sends. priority optional, default 5; 0-9 (9 highest).
+ * - SEND_TASK#<id#data>#<delay_ms>#<interface> [priority] : Schedules a one-shot CAN message send after delay_ms milliseconds. priority optional, default 5.
  *
  * Dependencies: Requires CAN utilities (e.g., cansend command), POSIX threads, sockets.
  * Thread safety: Uses mutexes for shared data structures like ThreadRegistry and ThreadPool.
@@ -48,7 +48,7 @@
 
 TODOS:
 1 add license stuff
-1 timer of 0 means one-shot message (wip) needs testing
+1 timer of 0 means one-shot message - needs testing
 
 idea:
 one-shot tasks will be treated like paused tasks, they will not be rescheduled until resumed/sent manually
