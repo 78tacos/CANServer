@@ -3,49 +3,63 @@
 
 /**
  * @file server.cpp - for Linux
- * @brief A multi-threaded server for handling CAN bus message scheduling and client commands over TCP sockets.
+ * @brief Multi-threaded TCP server for scheduling CAN bus transmissions and handling client commands.
  *
- * This server application reads configuration from a file (port and log level), sets up a TCP listener,
- * and accepts client connections. Each client connection is handled in a separate thread, where commands
- * are processed to schedule recurring CAN message sends using a thread pool with deadline-based priority queuing.
- * Supported commands include SHUTDOWN, KILL_ALL, LIST_THREADS, RESTART, KILL_THREAD, SET_LOG_LEVEL,
- * PAUSE, RESUME, LIST_TASKS, KILL_TASK, KILL_ALL_TASKS, and cansend for scheduling CAN messages.
+ * This server reads configuration from a file (PORT, LOG_LEVEL, WORKER_THREADS), opens a TCP listener,
+ * and accepts client connections. Each connection is handled in a dedicated client-handler thread.
+ * Scheduling uses an in-process deadline-aware ThreadPool with priority ordering. Tasks fork/exec the
+ * system `cansend` utility to perform CAN transmissions.
  *
- * The server uses a custom ThreadPool for task management, a ThreadRegistry for tracking active threads,
- * and logs events to a file based on configurable log levels.
+ * Configuration file (key=value):
+ *  - PORT=<port_number>
+ *  - LOG_LEVEL=<DEBUG|INFO|WARNING|ERROR|NOLOG>
+ *  - WORKER_THREADS=<n>   # optional, clamped to at least 1
  *
- * @note This is part of the DBCFileViewer_Client project by Team Qt (cute) Devs.
- * @todo Add license information, improve logging levels, implement candump-like features,
- *       verify thread registration, update frontend info messages, enhance config file error handling,
- *       add server restart from client, implement client window for server log viewing,
- *       and improve timer accuracy for sending.
+ * Client commands (text protocol; server matches prefixes):
+ *  - CANSEND#<id>#<payload>#<interval_ms>#<interface>[#priority]
+ *      Schedule a recurring CAN transmit. Examples:
+ *        CANSEND#123#DEADBEEF#1000#vcan0
+ *        CANSEND#0x123#deadbeef#250ms#vcan0#7
+ *      Notes: ID may be hex with 0x prefix; time may include "ms" suffix; priority optional (0-9), default 5.
  *
- * @param argc Number of command-line arguments (expected: 2, including program name and config file).
- * @param argv Command-line arguments: argv[1] should be the path to the configuration file.
- * @return 0 on successful execution, non-zero on error.
+ *  - SEND_TASK#<id>#<payload>#<delay_ms>#<interface>[#priority]
+ *      Schedule a single-shot send after delay_ms milliseconds. Same parsing rules as CANSEND.
  *
- * Configuration file format:
- * - PORT=<port_number> : Sets the listening port.
- * - LOG_LEVEL=<level> : Sets log level (DEBUG, INFO, WARNING, ERROR).
+ *  - LIST_TASKS
+ *      Returns per-client task list with status (running, paused, stopped, completed, error) and short error text if available.
  *
- * Client commands:
- * - SHUTDOWN : Gracefully shuts down the client connection.
- * - KILL_ALL : Terminates all processes spawned by the client.
- * - LIST_THREADS : Lists active threads.
- * - RESTART : Placeholder for server restart (not implemented).
- * - KILL_THREAD <thread_id> : Removes a thread from the registry.
- * - SET_LOG_LEVEL <level> : Changes the global log level.
- * - PAUSE <task_id> : Pauses a scheduled task.
- * - RESUME <task_id> : Resumes a paused task.
- * - LIST_TASKS : Lists active tasks with status.
- * - KILL_TASK <task_id> : Stops and removes a task.
- * - KILL_ALL_TASKS : Stops all tasks.
- * - LIST_CAN_INTERFACES : Lists available CAN interfaces (auto-refreshes before listing).
- * - CANSEND#<id#data>#<time_ms>#<interface> [priority] : Schedules recurring CAN message sends. priority optional, default 5; 0-9 (9 highest).
- * - SEND_TASK#<id#data>#<delay_ms>#<interface> [priority] : Schedules a one-shot CAN message send after delay_ms milliseconds. priority optional, default 5.
+ *  - PAUSE <task_id>
+ *  - RESUME <task_id>
+ *      Pause or resume a specific task for this client connection.
  *
- * Dependencies: Requires CAN utilities (e.g., cansend command), POSIX threads, sockets.
- * Thread safety: Uses mutexes for shared data structures like ThreadRegistry and ThreadPool.
+ *  - KILL_TASK <task_id>
+ *  - KILL_ALL_TASKS
+ *      Remove/stop one or all scheduled tasks for this client.
+ *
+ *  - LIST_CAN_INTERFACES
+ *      Refresh and list discovered CAN/vCAN interfaces on the host.
+ *
+ *  - LIST_THREADS
+ *      Returns the server-side ThreadRegistry contents (worker & client handler threads).
+ *
+ *  - SET_LOG_LEVEL <DEBUG|INFO|WARNING|ERROR|NOLOG>
+ *      Change server log verbosity at runtime.
+ *
+ *  - KILL_ALL
+ *      Best-effort: terminates processes spawned by this client (SIGTERM). Returns a confirmation string.
+ *
+ *  - KILL_THREAD <thread_id>
+ *      Remove a thread entry from the ThreadRegistry (best-effort, informational).
+ *
+ *  - SHUTDOWN
+ *      Client-requested graceful shutdown of the connection (does not stop the server process).
+ *
+ * Protocol notes:
+ *  - Server replies to each command with a short text response (OK / ERROR / Unknown command).
+ *  - Task IDs are generated as "task_<n>" per client session and returned on scheduling.
+ *  - The ThreadPool uses std::chrono::steady_clock for deadlines; higher numeric priority runs earlier when deadlines tie.
+ *
+ * Dependencies: POSIX sockets, fork/wait, C++20, and `cansend` (from can-utils) available in PATH.
  */
 /* priority of todos: 1 high, 2 medium, 3 low
 
