@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2025 Joseph Ogle, Kunal Singh, and Deven Nasso
+
 /**
  * @file server.cpp - for Linux
  * @brief A multi-threaded server for handling CAN bus message scheduling and client commands over TCP sockets.
@@ -48,13 +51,9 @@
 
 TODOS:
 1 add license stuff
-1 timer of 0 means one-shot message - needs testing
-
-idea:
-one-shot tasks will be treated like paused tasks, they will not be rescheduled until resumed/sent manually
-resume will be used to send them again, they will stay in the maps
-
-1 make one-shot messages have a button to manually send. keep them there but do not reschedule them until sended
+1 Frontend can decide to keep one-shot messages to resend manually (can change things to accommodate this better), or remove(kill) them
+1 FE also might need to kill tasks (completed/recurring) when they are changed/updated
+1 Old one-shot tasks might build up in memory, but it might not matter
 
 2 maybe add (automatic and manual) check for all busses available to system and send message to client
 2 add button for the above manual bus check in GUI
@@ -327,7 +326,7 @@ public:
 
 private:
     struct Task {
-        std::chrono::steady_clock::time_point deadline;  // Changed to steady_clock
+        std::chrono::steady_clock::time_point deadline; 
         int priority;
         std::size_t seq;
         std::function<void()> func;
@@ -346,7 +345,7 @@ private:
     };
 
     template <class F>
-    void enqueue_impl(std::chrono::steady_clock::time_point deadline,  // Changed to steady_clock
+    void enqueue_impl(std::chrono::steady_clock::time_point deadline, 
                       int priority,
                       bool drop_if_missed,
                       F&& f) {

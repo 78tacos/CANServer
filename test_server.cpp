@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2025 Joseph Ogle, Kunal Singh, and Deven Nasso
+
 #include <iostream>
 #include <string>
 #include <vector>
