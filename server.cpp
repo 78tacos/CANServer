@@ -31,9 +31,9 @@
  * Log path selection order (highest priority first):
  *  1. SERVER_LOG_PATH environment variable
  *  2. LOG_PATH in the config file
- *  3. Platform default (on Linux: `server.log` in CWD; on Android: `/data/local/tmp/server/server.log`)
+ *  3. Platform default (on Linux: `server.log` in CWD)
  * The server attempts to create parent directories for the configured log path and falls back to
- * stderr on failure. On Android the default is chosen for best adb/shell accessibility.
+ * stderr on failure.
  *
  * Restart behavior
  * ----------------
@@ -92,7 +92,7 @@
  * -------------------------------
  * - The server forks child processes to run `cansend`. The system must provide `cansend` (from can-utils)
  *   or the application must be adapted to send frames directly via PF_CAN sockets for environments where
- *   `cansend` isn't available (for example Android).
+ *   `cansend` isn't available.
  *
  * Dependencies: POSIX sockets, fork/wait, C++20, and `cansend` (from can-utils) available in PATH.
  */
@@ -830,6 +830,12 @@ int main(int argc, char* argv[]) {
                 logEvent(INFO, "Received DISCONNECT command from " + std::string(s));
                 send(new_fd, "Goodbye\n", 8, 0);
                 niceDisconnect = true;
+            };
+
+            commandMap["notice me senpai"] = [&](const std::string&) {
+                logEvent(INFO, "Received 'notice me senpai' from " + std::string(s));
+                const char* resp = "Senpai noticed you! (^_^) Here's a cookie: *crunch*\n";
+                send(new_fd, resp, std::strlen(resp), 0);
             };
 
             commandMap["KILL_ALL"] = [&](const std::string&) { // kills all processes started by this client. not sure of usefulness yet. doesn't seem to work right
