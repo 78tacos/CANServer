@@ -64,27 +64,25 @@
 /* priority of todos: 1 high, 2 medium, 3 low
 
 TODOS:
-1 add license stuff
 1 Frontend can decide to keep one-shot messages to resend manually (can change things to accommodate this better), or remove(kill) them
-1 FE also might need to kill tasks (completed/recurring) when they are changed/updated
-1 Old one-shot tasks might build up in memory, but it might not matter
+1 FE also might need to kill tasks (completed/recurring) when they are changed/updated, then start a new one
+1 Old one-shot tasks might build up in memory, but it might not matter (they are held to show status to FE/GUI)
 
-2 maybe add (automatic and manual) check for all busses available to system and send message to client
-2 add button for the above manual bus check in GUI
 2 handle cansend errors even more/better
-2 if checking for dead task (LIST_TASKS/UPDATE), return something useful
-2 if trying to pause/resume/kill a non-existent task, return something useful
+2 add event triggers for sending messages based on can bus activity (like candump -c) and started/stopped tasks
+2 triggers for timers (run until x, run for x time, run at x time, run every x time); run number of times
 
-3 deadline doesn't seem to work with enough precision. effectively just sleep
-3 make a sequence of one-shots for a simulation of a scenario (Frontend feature idea, maybe already implemented)
+3 deadline doesn't seem to work the way I intended. effectively just sleep. might actually be less efficient than just sleeping
 3 add feature to restart server from client
-3 add client window for server log viewing
-3 update frontend info "message" <- forgot what I meant here
+3 if checking for dead task (LIST_TASKS/UPDATE), return something useful
+3 if trying to pause/resume/kill a non-existent task, return something useful
+3 add feature to use dns
 
 POLISH:
 make scheduling timer more accurate
-maybe add candump-like features to ui
-add resource monitoring to send to client ui
+maybe add candump-like features to send to ui
+add resource monitoring to send to ui
+add client feature for server log viewing
 
 */
 
@@ -146,7 +144,7 @@ struct ThreadInfo {
     std::thread::id id;
     std::string name;
     std::string status;
-    std::chrono::steady_clock::time_point start_time;  // Changed to steady_clock
+    std::chrono::steady_clock::time_point start_time; 
 };
 
 /**
@@ -213,7 +211,7 @@ ThreadRegistry registry;
 
 // Global map to track PIDs to task IDs for error handling
 std::unordered_map<pid_t, std::string> globalPidToTaskId;
-std::mutex globalPidMutex;  // Protect the global map
+std::mutex globalPidMutex;  // Protect the global map (at all costs)
 
 // Add a new global map for task error messages
 std::unordered_map<std::string, std::string> globalTaskErrors;
