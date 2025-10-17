@@ -21,6 +21,47 @@
         "isDefault": true
       },
       "problemMatcher": []
+    },
+    {
+      "label": "Build Server (ARM64)",
+      "type": "shell",
+      "command": "aarch64-linux-gnu-g++",
+      "args": [
+          "-std=c++20",
+          "-Wall",
+          "-pthread",
+          "server.cpp",
+          "-o",
+          "outputarm/server"
+      ],
+      "group": {
+          "kind": "build",
+          "isDefault": true
+      },
+      "problemMatcher": ["$gcc"],
+      "dependsOn": ["Create Output Directory"]
+    },
+    {
+      "label": "Create Output Directory",
+      "type": "shell",
+      "command": "mkdir",
+      "args": ["-p", "outputarm"],
+      "windows": {
+          "command": "powershell",
+          "args": ["-Command", "New-Item -ItemType Directory -Force -Path outputarm"]
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "CleanArm",
+      "type": "shell",
+      "command": "rm",
+      "args": ["-rf", "outputarm"],
+      "windows": {
+          "command": "powershell",
+          "args": ["-Command", "Remove-Item -Recurse -Force outputarm -ErrorAction SilentlyContinue"]
+      },
+      "problemMatcher": []
     }
   ]
 }

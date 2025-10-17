@@ -5,15 +5,41 @@
  * @file server.cpp - for Linux
  * @brief Multi-threaded TCP server for scheduling CAN bus transmissions and handling client commands.
  *
- * This server reads configuration from a file (PORT, LOG_LEVEL, WORKER_THREADS), opens a TCP listener,
- * and accepts client connections. Each connection is handled in a dedicated client-handler thread.
- * Scheduling uses an in-process deadline-aware ThreadPool with priority ordering. Tasks fork/exec the
- * system `cansend` utility to perform CAN transmissions.
+ * Overview
+ * --------
+ * This server accepts simple text commands over TCP and schedules CAN frame transmissions via
+ * an in-process thread pool. Each client connection is handled by its own client-handler thread
+ * which may schedule recurring or single-shot tasks that fork/exec `cansend` to perform the send.
  *
- * Configuration file (key=value):
+ * Scheduler changes
+ * -----------------
+ * The scheduling implementation uses a dedicated timer thread that manages delayed work and
+ * dispatches ready tasks into a priority-based worker queue. Use `enqueue_after(duration, priority, fn)`
+ * to schedule delayed execution — this replaces the earlier deadline-in-worker approach while
+ * preserving priority and FIFO tie-break semantics.
+ *
+ * Configuration
+ * -------------
+ * The server reads a simple key=value config file. Supported keys used by the code:
  *  - PORT=<port_number>
  *  - LOG_LEVEL=<DEBUG|INFO|WARNING|ERROR|NOLOG>
- *  - WORKER_THREADS=<n>   # optional, clamped to at least 1
+ *  - WORKER_THREADS=<n>
+ *  - LOG_PATH=<absolute_path>   # optional: overrides the log file path
+ *
+ * Logging
+ * -------
+ * Log path selection order (highest priority first):
+ *  1. SERVER_LOG_PATH environment variable
+ *  2. LOG_PATH in the config file
+ *  3. Platform default (on Linux: `server.log` in CWD; on Android: `/data/local/tmp/server/server.log`)
+ * The server attempts to create parent directories for the configured log path and falls back to
+ * stderr on failure. On Android the default is chosen for best adb/shell accessibility.
+ *
+ * Restart behavior
+ * ----------------
+ * A client can request a restart via the `RESTART` command. The server responds, sets a restart flag,
+ * performs graceful cleanup, then `execv()`s the same binary/arguments to restart in-place. This preserves
+ * process identity while reinitializing program state.
  *
  * Client commands (text protocol; server matches prefixes):
  *  - CANSEND#<id>#<payload>#<interval_ms>#<interface>[#priority]
@@ -52,39 +78,25 @@
  *      Remove a thread entry from the ThreadRegistry (best-effort, informational).
  *
  *  - SHUTDOWN
- *      Client-requested graceful shutdown of the connection (does not stop the server process).
+ *      Client-requested graceful shutdown of the server.
+ * 
+ *  - RESTART
+ *      Request the server to perform a graceful restart (execv of the same binary).
  *
  * Protocol notes:
  *  - Server replies to each command with a short text response (OK / ERROR / Unknown command).
  *  - Task IDs are generated as "task_<n>" per client session and returned on scheduling.
  *  - The ThreadPool uses std::chrono::steady_clock for deadlines; higher numeric priority runs earlier when deadlines tie.
+ * 
+ *  Notes & platform considerations
+ * -------------------------------
+ * - The server forks child processes to run `cansend`. The system must provide `cansend` (from can-utils)
+ *   or the application must be adapted to send frames directly via PF_CAN sockets for environments where
+ *   `cansend` isn't available (for example Android).
  *
  * Dependencies: POSIX sockets, fork/wait, C++20, and `cansend` (from can-utils) available in PATH.
  */
-/* priority of todos: 1 high, 2 medium, 3 low
 
-TODOS:
-1 Frontend can decide to keep one-shot messages to resend manually (can change things to accommodate this better), or remove(kill) them
-1 FE also might need to kill tasks (completed/recurring) when they are changed/updated, then start a new one
-1 Old one-shot tasks might build up in memory, but it might not matter (they are held to show status to FE/GUI)
-
-2 handle cansend errors even more/better
-2 add event triggers for sending messages based on can bus activity (like candump -c) and started/stopped tasks
-2 triggers for timers (run until x, run for x time, run at x time, run every x time); run number of times
-
-3 deadline doesn't seem to work the way I intended. effectively just sleep. might actually be less efficient than just sleeping
-3 add feature to restart server from client
-3 if checking for dead task (LIST_TASKS/UPDATE), return something useful
-3 if trying to pause/resume/kill a non-existent task, return something useful
-3 add feature to use dns
-
-POLISH:
-make scheduling timer more accurate
-maybe add candump-like features to send to ui
-add resource monitoring to send to ui
-add client feature for server log viewing
-
-*/
 
 
 #include <stdio.h>
@@ -102,6 +114,8 @@ add client feature for server log viewing
 #include <signal.h>
 #include <cerrno>
 #include <system_error>
+#include <sys/prctl.h>
+#include <sys/stat.h>
 #include <fstream>
 #include <algorithm>
 #include <array>
@@ -118,6 +132,7 @@ add client feature for server log viewing
 #include <atomic>
 #include <sstream>
 #include <unordered_map>
+#include <memory>
 
 #define BACKLOG 10
 #define MAXDATASIZE 10000
@@ -217,6 +232,20 @@ std::mutex globalPidMutex;  // Protect the global map (at all costs)
 std::unordered_map<std::string, std::string> globalTaskErrors;
 std::mutex globalErrorMutex;
 
+// Configurable log path (can be set from config file or SERVER_LOG_PATH env var)
+static std::string g_logPath;
+
+// Flag to request a full server restart (from client command)
+static std::atomic<bool> restartRequested{false};
+
+// Flag set by signal handler to request server shutdown
+static volatile sig_atomic_t shutdownRequested = 0;
+
+// Signal handler for SIGINT/SIGTERM to request graceful shutdown
+void shutdown_handler(int) {
+    shutdownRequested = 1;
+}
+
 // Signal handler for SIGCHLD - now only for logging, reaping handled in tasks
 void sigchld_handler(int s) {
     (void)s;
@@ -255,28 +284,99 @@ void logEvent(int level, const std::string& message) { //logging with hierarchy
     if (level < log_level) {
         return; // Skip logging if message severity is below configured log_level
     }
-    std::ofstream log("server.log", std::ios::app);
-    auto now = std::chrono::system_clock::now(); 
+
+    // Determine log path (env override allowed)
+    std::string logPath;
+    if (const char* env = std::getenv("SERVER_LOG_PATH")) {
+        logPath = env;
+    } else if (!g_logPath.empty()) {
+        logPath = g_logPath;
+    } else {
+        #if defined(__arm__) || defined(__aarch64__) || defined(__ARM_ARCH)
+            logPath = "server.log"; //change log path here
+        #else
+            logPath = "server.log";
+        #endif
+    }
+
+    std::filesystem::path p(logPath);
+    std::error_code ec;
+    auto dir = p.parent_path();
+
+    // Ensure parent dir exists (best-effort)
+    if (!dir.empty() && !std::filesystem::exists(dir, ec)) {
+        if (!std::filesystem::create_directories(dir, ec)) {
+            std::cerr << "Failed to create log directory '" << dir.string() << "': " << ec.message() << "\n";
+            // fallback to stderr
+            auto now = std::chrono::system_clock::now();
+            auto in_time_t = std::chrono::system_clock::to_time_t(now);
+            std::cerr << "[" << std::put_time(std::localtime(&in_time_t), "%Y-%m-%d %H:%M:%S") << "] [" << level << "] " << message << std::endl;
+            return;
+        } else {
+            // best-effort make readable by shell
+            chmod(dir.c_str(), 0777); // ignore failure
+        }
+    }
+
+    std::ofstream log(logPath, std::ios::app);
+    if (!log.is_open()) {
+        std::cerr << "Failed to open log file '" << logPath << "': " << strerror(errno) << "\n";
+        auto now = std::chrono::system_clock::now();
+        auto in_time_t = std::chrono::system_clock::to_time_t(now);
+        std::cerr << "[" << std::put_time(std::localtime(&in_time_t), "%Y-%m-%d %H:%M:%S") << "] [" << level << "] " << message << std::endl;
+        return;
+    }
+
+    auto now = std::chrono::system_clock::now();
     auto in_time_t = std::chrono::system_clock::to_time_t(now);
     log << "[" << std::put_time(std::localtime(&in_time_t), "%Y-%m-%d %H:%M:%S") << "] [" << level << "] " << message << std::endl;
+    log.flush();
+    // ensure readable by shell
+    chmod(logPath.c_str(), 0644); // ignore failure
 }
 
 /**
  * @class ThreadPool
  * @brief A thread pool implementation that manages a fixed number of worker threads to execute tasks asynchronously.
  *
- * The ThreadPool uses a priority queue to schedule tasks based on deadlines and a priority number for FIFO ordering.
- * Tasks can be enqueued with or without priorities. Deadlines are like timers. If a task has a deadline, it will be executed as soon as possible after the deadline,
- * or can be discarded if the deadline is missed and drop_if_missed is true. Priorities determine execution order when deadlines are equal
- * (higher priority runs first). For tasks with the same deadline and priority, FIFO order is preserved.
- * 
- * The thread pool automatically registers worker threads with a Thread registry for identification.
- * 
+ * Tasks can be enqueued with a priority value. Higher priority tasks run first, and FIFO order is preserved for
+ * equal priorities. Delayed work is handled by a dedicated timer thread that sleeps until a task is ready and then
+ * dispatches it to the workers, avoiding deadline bookkeeping inside the workers themselves.
+ *
  * @note The number of threads defaults to std::thread::hardware_concurrency(), but is clamped to at least 1.
  * @note Tasks are executed in worker threads, and exceptions in task functions are caught and ignored.
  * @note The destructor ensures all threads are joined after signaling them to stop.
  */
 class ThreadPool {
+private:
+    struct Task {
+        int priority;
+        std::size_t seq;
+        std::function<void()> func;
+    };
+
+    struct TaskCmp {
+        bool operator()(Task const& a, Task const& b) const {
+            if (a.priority != b.priority) return a.priority < b.priority;
+            return a.seq > b.seq;
+        }
+    };
+
+    struct TimedTask {
+        std::chrono::steady_clock::time_point runAt;
+        int priority;
+        std::size_t seq;
+        std::function<void()> func;
+    };
+
+    struct TimedCmp {
+        bool operator()(TimedTask const& a, TimedTask const& b) const {
+            if (a.runAt != b.runAt) return a.runAt > b.runAt;
+            if (a.priority != b.priority) return a.priority < b.priority;
+            return a.seq > b.seq;
+        }
+    };
+
 public:
     explicit ThreadPool(size_t n = std::thread::hardware_concurrency()) : stop(false), seq(0) {
         if (n == 0) n = 1;
@@ -286,94 +386,116 @@ public:
                 for (;;) {
                     Task task;
                     {
-                        std::unique_lock<std::mutex> lock(this->mtx);
-                        while (!stop) {
-                            if (!pq.empty()) {
-                                auto next_deadline = pq.top().deadline;
-                                auto now = std::chrono::steady_clock::now();  // Changed to steady_clock
-                                if (next_deadline <= now) {
-                                    // Execute task immediately
-                                    task = std::move(pq.top());
-                                    pq.pop();
-                                    lock.unlock();
-                                    try { task.func(); } catch (...) { /* handle */ }
-                                    lock.lock();
-                                } else {
-                                    // Wait until deadline or new task
-                                    cv.wait_until(lock, next_deadline);
-                                }
-                            } else {
-                                cv.wait(lock);
-                            }
+                        std::unique_lock<std::mutex> lock(taskMutex);
+                        queueCv.wait(lock, [this] { return stop.load() || !taskQueue.empty(); });
+                        if (stop.load() && taskQueue.empty()) {
+                            return;
                         }
+                        task = std::move(taskQueue.top());
+                        taskQueue.pop();
+                    }
+
+                    try {
+                        task.func();
+                    } catch (...) {
+                        // Swallow exceptions so worker loop keeps running
                     }
                 }
             });
         }
+
+        timerThread = std::thread([this] {
+            registry.add(std::this_thread::get_id(), "thread pool timer");
+            std::unique_lock<std::mutex> lock(timerMutex);
+            while (!stop.load()) {
+                if (timedQueue.empty()) {
+                    timerCv.wait(lock, [this] { return stop.load() || !timedQueue.empty(); });
+                    continue;
+                }
+
+                auto nextRun = timedQueue.top().runAt;
+                if (stop.load()) {
+                    break;
+                }
+
+                auto now = std::chrono::steady_clock::now();
+                if (now < nextRun) {
+                    timerCv.wait_until(lock, nextRun);
+                    continue;
+                }
+
+                TimedTask task = std::move(timedQueue.top());
+                timedQueue.pop();
+                lock.unlock();
+                {
+                    std::lock_guard<std::mutex> queueLock(taskMutex);
+                    taskQueue.push(Task{task.priority, task.seq, std::move(task.func)});
+                }
+                queueCv.notify_one();
+                lock.lock();
+            }
+        });
     }
 
-    // Enqueue a normal (no-deadline) task with optional priority (higher = run earlier when deadlines tie)
     template <class F>
     void enqueue(int priority, F&& f) {
-        enqueue_impl(std::chrono::steady_clock::time_point::max(), priority, false, std::forward<F>(f));
+        if (stop.load()) {
+            return;
+        }
+        std::function<void()> fn(std::forward<F>(f));
+        {
+            std::lock_guard<std::mutex> lock(taskMutex);
+            taskQueue.push(Task{priority, seq++, std::move(fn)});
+        }
+        queueCv.notify_one();
     }
 
-    // Enqueue with an absolute deadline (steady_clock::time_point)
-    template <class F>
-    void enqueue_deadline(std::chrono::steady_clock::time_point deadline,  // Changed to steady_clock
-                          int priority,
-                          bool drop_if_missed,
-                          F&& f) {
-        enqueue_impl(deadline, priority, drop_if_missed, std::forward<F>(f));
+    template <class Rep, class Period, class F>
+    void enqueue_after(std::chrono::duration<Rep, Period> delay,
+                       int priority,
+                       F&& f) {
+        if (stop.load()) {
+            return;
+        }
+        std::function<void()> fn(std::forward<F>(f));
+        auto runAt = std::chrono::steady_clock::now() + std::chrono::duration_cast<std::chrono::steady_clock::duration>(delay);
+        TimedTask timedTask{runAt,
+                            priority,
+                            seq++,
+                            std::move(fn)};
+        {
+            std::lock_guard<std::mutex> lock(timerMutex);
+            timedQueue.push(std::move(timedTask));
+        }
+        timerCv.notify_one();
     }
 
     ~ThreadPool() {
-        {
-            std::lock_guard<std::mutex> lock(mtx);
-            stop = true;
+        stop.store(true);
+        queueCv.notify_all();
+        timerCv.notify_all();
+        for (auto& t : threads) {
+            if (t.joinable()) {
+                t.join();
+            }
         }
-        cv.notify_all();
-        for (auto &t : threads) if (t.joinable()) t.join();
+        if (timerThread.joinable()) {
+            timerThread.join();
+        }
     }
 
 private:
-    struct Task {
-        std::chrono::steady_clock::time_point deadline; 
-        int priority;
-        std::size_t seq;
-        std::function<void()> func;
-        bool drop_if_missed;
-    };
-
-    struct Cmp {
-        bool operator()(Task const& a, Task const& b) const {
-            // earlier deadline should come first
-            if (a.deadline != b.deadline) return a.deadline > b.deadline;
-            // higher priority should come first
-            if (a.priority != b.priority) return a.priority < b.priority;
-            // preserve FIFO for equal deadline+priority
-            return a.seq > b.seq;
-        }
-    };
-
-    template <class F>
-    void enqueue_impl(std::chrono::steady_clock::time_point deadline, 
-                      int priority,
-                      bool drop_if_missed,
-                      F&& f) {
-        std::function<void()> fn(std::forward<F>(f));
-        {
-            std::lock_guard<std::mutex> lock(mtx);
-            pq.push(Task{deadline, priority, seq++, std::move(fn), drop_if_missed});
-        }
-        cv.notify_one();
-    }
-
     std::vector<std::thread> threads;
-    std::priority_queue<Task, std::vector<Task>, Cmp> pq;
-    std::mutex mtx;
-    std::condition_variable cv;
-    bool stop;
+    std::priority_queue<Task, std::vector<Task>, TaskCmp> taskQueue;
+    std::mutex taskMutex;
+    std::condition_variable queueCv;
+
+    std::thread timerThread;
+    std::priority_queue<TimedTask, std::vector<TimedTask>, TimedCmp> timedQueue;
+    std::mutex timerMutex;
+    std::condition_variable timerCv;
+
+    std::atomic<bool> stop;
     std::atomic<std::size_t> seq;
 };
 
@@ -471,6 +593,9 @@ bool isValidCanInterface(const std::string& interface) {
 }
 
 int main(int argc, char* argv[]) {
+    // Save argv for potential exec-based restart
+    std::vector<std::string> savedArgs;
+    for (int i = 0; i < argc; ++i) savedArgs.emplace_back(argv[i]);
     int sockfd, new_fd;
     struct addrinfo hints, *servinfo, *p;
     struct sockaddr_storage their_addr;
@@ -511,6 +636,12 @@ int main(int argc, char* argv[]) {
             std::string portStr = trim(std::string(lineView.substr(5)));
             port = portStr;
             logEvent(DEBUG, "Port set to " + *port);
+        } else if (lineView.substr(0, 9) == "LOG_PATH=") {
+            std::string pathStr = trim(std::string(lineView.substr(9)));
+            if (!pathStr.empty()) {
+                g_logPath = pathStr;
+                logEvent(DEBUG, "Log path set to " + g_logPath);
+            }
         } else if (lineView.substr(0, 10) == "LOG_LEVEL=") {
             std::string logLevelStr = trim(std::string(lineView.substr(10)));
             log_level_str = logLevelStr;
@@ -613,10 +744,28 @@ int main(int argc, char* argv[]) {
         throw std::system_error(errno, std::generic_category(), "sigaction");
     }
 
+    // Install shutdown handlers for SIGINT and SIGTERM so we can clean up child processes
+    struct sigaction sa_shutdown{};
+    sa_shutdown.sa_handler = shutdown_handler;
+    sigemptyset(&sa_shutdown.sa_mask);
+    // Don't set SA_RESTART here: we want accept() to be interrupted so we can break out
+    sa_shutdown.sa_flags = 0;
+    if (sigaction(SIGINT, &sa_shutdown, NULL) == -1) {
+        logEvent(WARNING, "server: failed to install SIGINT handler");
+    }
+    if (sigaction(SIGTERM, &sa_shutdown, NULL) == -1) {
+        logEvent(WARNING, "server: failed to install SIGTERM handler");
+    }
+
     logEvent(INFO, "server: waiting for connections...");
     std::cout << "server: waiting for connections...\n";
 
-    ThreadPool pool(std::max<size_t>(1, std::min<size_t>(configuredWorkerCount, std::thread::hardware_concurrency()))); // if it doesn't support more threads, at least 1 thread
+    // ThreadPool lives on the heap so we can destruct/recreate across restart cycles if needed
+    auto make_pool = [&]() {
+        return std::make_unique<ThreadPool>(std::max<size_t>(1, std::min<size_t>(configuredWorkerCount, std::thread::hardware_concurrency())));
+    };
+
+    std::unique_ptr<ThreadPool> pool = make_pool();
 
     // Discover available CAN interfaces
     availableCanInterfaces = discoverCanInterfaces();
@@ -630,10 +779,11 @@ int main(int argc, char* argv[]) {
         logEvent(INFO, "Available CAN interfaces: " + ifaceList);
     }
 
-    while (true) {
+    while (!shutdownRequested && !restartRequested.load()) {
         sin_size = sizeof their_addr;
         new_fd = accept(sockfd, (struct sockaddr*)&their_addr, &sin_size);
         if (new_fd == -1) {
+            if (shutdownRequested) break;
             logEvent(ERROR, "server: accept");
             std::perror("accept");
             continue;
@@ -659,7 +809,7 @@ int main(int argc, char* argv[]) {
             info.start_time = std::chrono::steady_clock::now();  // Changed to steady_clock
             std::array<char, MAXDATASIZE> buf;
             int numbytes;
-            bool niceShutdown = false;
+            bool niceDisconnect = false;
             int priority = 5; //needs to be implemented in the ui
             // `time_ms` parsed from commands determines recurring interval or single-shot delay
             std::string canInterface; //can0, vcan1, etc.
@@ -671,9 +821,15 @@ int main(int argc, char* argv[]) {
             std::atomic<int> taskCounter{0};  // For unique task IDs
             std::unordered_map<std::string, std::function<void(const std::string& receivedMsg)>> commandMap;
 
-            commandMap["SHUTDOWN"] = [&](const std::string&) {
+            commandMap["SHUTDOWN"] = [&](const std::string&) { //shutdown server
                 logEvent(INFO, "Received SHUTDOWN command from " + std::string(s));
-                niceShutdown = true;
+                shutdownRequested = true;
+            };
+
+            commandMap["DISCONNECT"] = [&](const std::string&) {
+                logEvent(INFO, "Received DISCONNECT command from " + std::string(s));
+                send(new_fd, "Goodbye\n", 8, 0);
+                niceDisconnect = true;
             };
 
             commandMap["KILL_ALL"] = [&](const std::string&) { // kills all processes started by this client. not sure of usefulness yet. doesn't seem to work right
@@ -687,14 +843,16 @@ int main(int argc, char* argv[]) {
                 send(new_fd, "All processes killed.\n", 48, 0);
             };
 
-            commandMap["LIST_THREADS"] = [&](const std::string&) { //also called UPDATE
+            commandMap["LIST_THREADS"] = [&](const std::string&) { //not sure about this
                 logEvent(INFO, "Received LIST_THREADS command from " + std::string(s));
                 send(new_fd, registry.toString().c_str(), registry.toString().size(), 0);
             };
 
             commandMap["RESTART"] = [&](const std::string&) {
                 logEvent(INFO, "Received RESTART command from " + std::string(s));
-                send(new_fd, "Server restart not implemented yet.\n", 36, 0);
+                send(new_fd, "Server restarting...\n", 21, 0);
+                restartRequested.store(true);
+                // close the listening socket by requesting shutdown; main loop will handle restart
             };
 
             commandMap["KILL_THREAD "] = [&](const std::string& msg) {
@@ -841,6 +999,8 @@ int main(int argc, char* argv[]) {
                                          const std::shared_ptr<bool>& activeFlag) -> bool {
                 pid_t pid = fork();
                 if (pid == 0) {
+                    // Ensure child dies if parent exits unexpectedly
+                    prctl(PR_SET_PDEATHSIG, SIGTERM);
                     execl("/bin/sh", "sh", "-c", cmd.c_str(), NULL);
                     _exit(1);
                 } else if (pid > 0) {
@@ -907,16 +1067,15 @@ int main(int argc, char* argv[]) {
                 int interval = ct; // snapshot the interval
 
                 auto enqueueRecurring = [&pool, interval, priority, recurring]() {
-                    pool.enqueue_deadline(std::chrono::steady_clock::now() + std::chrono::milliseconds(interval),  // Changed to steady_clock
-                                          priority,
-                                          false,
-                                          [recurring]() {
-                                              try {
-                                                  (*recurring)();
-                                              } catch (...) {
-                                                  logEvent(ERROR, "Unhandled exception in recurring cansend task");
-                                              }
-                                          });
+                    pool.enqueue_after(std::chrono::milliseconds(interval),
+                                       priority,
+                                       [recurring]() {
+                                           try {
+                                               (*recurring)();
+                                           } catch (...) {
+                                               logEvent(ERROR, "Unhandled exception in recurring cansend task");
+                                           }
+                                       });
                 };
 
                 // Capture the shared_ptrs by value, not by accessing maps
@@ -967,12 +1126,11 @@ int main(int argc, char* argv[]) {
                     }
 
                     if (*pauseFlag) {
-                        pool.enqueue_deadline(std::chrono::steady_clock::now() + std::chrono::milliseconds(50),
-                                              priority,
-                                              false,
-                                              [singleShot]() {
-                                                  (*singleShot)();
-                                              });
+                        pool.enqueue_after(std::chrono::milliseconds(50),
+                                           priority,
+                                           [singleShot]() {
+                                               (*singleShot)();
+                                           });
                         return;
                     }
 
@@ -985,12 +1143,11 @@ int main(int argc, char* argv[]) {
                     }
                 };
 
-                pool.enqueue_deadline(std::chrono::steady_clock::now() + std::chrono::milliseconds(delayMs),
-                                      priority,
-                                      false,
-                                      [singleShot]() {
-                                          (*singleShot)();
-                                      });
+                pool.enqueue_after(std::chrono::milliseconds(delayMs),
+                                   priority,
+                                   [singleShot]() {
+                                       (*singleShot)();
+                                   });
 
                 return taskId;
             };
@@ -1067,7 +1224,7 @@ int main(int argc, char* argv[]) {
                 return true;
             };
 
-            while (!niceShutdown) {
+            while (!niceDisconnect) {
                 if ((numbytes = recv(new_fd, buf.data(), MAXDATASIZE - 1, 0)) == -1) {
                     logEvent(ERROR, "recv");
                     perror("recv");
@@ -1101,7 +1258,7 @@ int main(int argc, char* argv[]) {
                         }
 
                         logEvent(INFO, "Parsed SEND_TASK: " + cfg.canBus + " " + cfg.canIdData + " in " + std::to_string(cfg.intervalMs) + "ms priority " + std::to_string(cfg.priority) + " from " + std::string(s));
-                        std::string taskId = setupSingleShotCansend(cfg.command, cfg.intervalMs, cfg.priority, pool, taskPauses, taskActive, taskDetails, taskCounter);
+                        std::string taskId = setupSingleShotCansend(cfg.command, cfg.intervalMs, cfg.priority, *pool, taskPauses, taskActive, taskDetails, taskCounter);
                         std::string response = "OK: SEND_TASK scheduled with task ID: " + taskId + "\n";
                         send(new_fd, response.c_str(), response.size(), 0);
                     } else if (receivedMsg.rfind("CANSEND#", 0) == 0) {
@@ -1115,7 +1272,7 @@ int main(int argc, char* argv[]) {
                         }
 
                         logEvent(INFO, "Parsed CANSEND: " + cfg.canBus + " " + cfg.canIdData + " every " + std::to_string(cfg.intervalMs) + "ms priority " + std::to_string(cfg.priority) + " from " + std::string(s));
-                        std::string taskId = setupRecurringCansend(cfg.command, cfg.intervalMs, cfg.priority, pool, clientPids, taskPauses, taskActive, taskDetails, taskCounter);
+                        std::string taskId = setupRecurringCansend(cfg.command, cfg.intervalMs, cfg.priority, *pool, clientPids, taskPauses, taskActive, taskDetails, taskCounter);
                         std::string response = "OK: CANSEND scheduled with task ID: " + taskId + "\n";
                         send(new_fd, response.c_str(), response.size(), 0);
                     } else {
@@ -1165,6 +1322,37 @@ int main(int argc, char* argv[]) {
         });
 
         clientThread.detach();
+    }
+    // Begin shutdown sequence
+    logEvent(INFO, "Server shutdown requested, performing cleanup");
+
+    // Close the listening socket to stop accepting new connections
+    close(sockfd);
+
+    // Best-effort: terminate any remaining child processes we tracked
+    {
+        std::lock_guard<std::mutex> lock(globalPidMutex);
+        for (const auto& [pid, tid] : globalPidToTaskId) {
+            if (pid <= 0) continue;
+            if (kill(pid, SIGTERM) == 0) {
+                logEvent(INFO, std::string("Sent SIGTERM to child pid ") + std::to_string(pid) + " (task " + tid + ")");
+            } else {
+                logEvent(WARNING, std::string("Failed to kill child pid ") + std::to_string(pid) + ": " + std::string(strerror(errno)));
+            }
+        }
+        globalPidToTaskId.clear();
+    }
+
+    logEvent(INFO, "Server exit complete.");
+    // If a restart was requested by a client, execv the same binary with the same args
+    if (restartRequested.load()) {
+        logEvent(INFO, "Restart requested — execv'ing self");
+        std::vector<char*> execArgs;
+        for (auto &s : savedArgs) execArgs.push_back(const_cast<char*>(s.c_str()));
+        execArgs.push_back(nullptr);
+        execv(execArgs[0], execArgs.data());
+        // If execv returns, log and fall through to exit
+        logEvent(ERROR, "execv failed: " + std::string(strerror(errno)));
     }
 
     return 0;

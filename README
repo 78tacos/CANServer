@@ -1,6 +1,11 @@
 # CAN Bus Scheduler
 
-A multi-threaded TCP server and companion client for scheduling recurring or one-shot `cansend` transmissions on Linux CAN/vCAN interfaces. Tasks are executed through a deadline-aware thread pool that forks the system `cansend` utility.
+ A multi-threaded TCP server and companion client for scheduling recurring or one-shot `cansend` transmissions on Linux CAN/vCAN interfaces.
+
+Notes on recent changes:
+- Scheduler refactor: the ThreadPool now uses a dedicated timer thread and an `enqueue_after` API for delayed work (replaces older deadline-in-worker logic). Priority + FIFO semantics are preserved.
+- Restart: the `RESTART` client command is implemented; it requests a graceful shutdown and re-execs the server binary so the process restarts in-place.
+- Logging: log path can be set via `LOG_PATH=` in the server config or via the `SERVER_LOG_PATH` environment variable. On Android the default log path is `/data/local/tmp/server/server.log`.
 
 ## Features
 - Deadline + priority thread pool for CAN message scheduling.
@@ -44,6 +49,7 @@ make clean       # remove binaries
 PORT=50123
 LOG_LEVEL=DEBUG        # DEBUG|INFO|WARNING|ERROR|NOLOG
 WORKER_THREADS=2       # optional, defaults to min(cores, value) with floor of 1
+LOG_PATH=/var/log/canserver/server.log  # optional: overrides default log path (./server.log). SERVER_LOG_PATH env overrides all
 ```
 
 ### Client (`output/client.conf`)
@@ -68,12 +74,15 @@ Terminal 2:
 - `SEND_TASK#<id>#<payload>#<delay_ms>#<bus>[#priority]` — one-shot transmission.
 - `LIST_TASKS`, `PAUSE <task_id>`, `RESUME <task_id>`, `KILL_TASK <task_id>`, `KILL_ALL_TASKS`.
 - `LIST_CAN_INTERFACES` — refreshes and lists CAN/vCAN devices.
-- `SET_LOG_LEVEL <level>`, `LIST_THREADS`, `KILL_THREAD <id>`, `KILL_ALL`, `SHUTDOWN`, `RESTART` (placeholder).
+- `SET_LOG_LEVEL <level>`, `LIST_THREADS`, `KILL_THREAD <id>`, `KILL_ALL`, `SHUTDOWN`, `RESTART`.
 
 Priority defaults to 5 and accepts digits `0–9` (higher runs earlier when deadlines tie). `interval_ms`/`delay_ms` accept optional `ms` suffix.
 
-## Observability
-- Runtime logs are appended to `server.log` relative to the launch directory.
+- Runtime logs are appended to the configured log path. Priority for selecting where logs go:
+	1. `SERVER_LOG_PATH` environment variable (if set)
+	2. `LOG_PATH=` in the server configuration file
+	3. Platform default (`server.log` in CWD on Linux, `/data/local/tmp/server/server.log` on Android)
+- The server will attempt to create parent directories for the configured `LOG_PATH` and will fall back to stderr if it cannot write logs.
 - `LIST_TASKS` returns status plus error strings for failed tasks.
 - Child process failures (non-zero exit, signal) are tracked per task.
 
