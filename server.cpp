@@ -23,8 +23,8 @@
  * The server reads a simple key=value config file. Supported keys used by the code:
  *  - PORT=<port_number>
  *  - LOG_LEVEL=<DEBUG|INFO|WARNING|ERROR|NOLOG>
- *  - WORKER_THREADS=<n>
- *  - LOG_PATH=<absolute_path>   # optional: overrides the log file path
+ *  - WORKER_THREADS=<n> if the workload is very high, this can be adjusted
+ *  - LOG_PATH=<absolute_path>   # optional: overrides the log file path but SERVER_LOG_PATH env var overrides all
  *
  * Logging
  * -------
@@ -791,7 +791,7 @@ int main(int argc, char* argv[]) {
 
         inet_ntop(their_addr.ss_family, get_in_addr((struct sockaddr*)&their_addr), s, sizeof s);
         std::cout << "Connection from: " << s << std::endl;
-        /* // todo add this only for potential ssh client. if client is not gui
+        /* 
         if (send (new_fd, "Hello, you are connected to the server!\n", 39, 0) == -1) { 
             logEvent(ERROR, "send");
             std::perror("send");
@@ -810,7 +810,7 @@ int main(int argc, char* argv[]) {
             std::array<char, MAXDATASIZE> buf;
             int numbytes;
             bool niceDisconnect = false;
-            int priority = 5; //needs to be implemented in the ui
+            int priority = 5; //needs to be implemented in the ui but it doesn't matter
             // `time_ms` parsed from commands determines recurring interval or single-shot delay
             std::string canInterface; //can0, vcan1, etc.
             std::string canIdStr; //CAN ID and data in hex
@@ -854,7 +854,7 @@ int main(int argc, char* argv[]) {
                 send(new_fd, registry.toString().c_str(), registry.toString().size(), 0);
             };
 
-            commandMap["RESTART"] = [&](const std::string&) {
+            commandMap["RESTART"] = [&](const std::string&) { //doesn't work yet
                 logEvent(INFO, "Received RESTART command from " + std::string(s));
                 send(new_fd, "Server restarting...\n", 21, 0);
                 restartRequested.store(true);
