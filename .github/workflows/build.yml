@@ -9,7 +9,7 @@ on:
 
 jobs:
   build:
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-24.04
     
     steps:
     - name: Checkout code
@@ -98,26 +98,17 @@ jobs:
         echo "C++ includes path:"
         aarch64-linux-gnu-g++ -E -x c++ - -v < /dev/null 2>&1 | grep -A 10 "#include"
     
-    - name: Build ARM64 server
+    - name: Build ARM64 server (C++20)
       run: |
         mkdir -p artifacts-arm64
-        # Try C++20 first, fallback to C++17 if format header missing
         aarch64-linux-gnu-g++ -std=c++20 -Wall -pthread \
-          server.cpp -o artifacts-arm64/server-arm64 || \
-        (echo "C++20 failed, trying C++17..." && \
-         aarch64-linux-gnu-g++ -std=c++17 -Wall -pthread \
-          server.cpp -o artifacts-arm64/server-arm64)
+          server.cpp -o artifacts-arm64/server-arm64
     
-    - name: Build ARM64 static server
+    - name: Build ARM64 static server (C++20)
       run: |
-        # Try C++20 first, fallback to C++17 if format header missing
         aarch64-linux-gnu-g++ -std=c++20 -Wall -pthread \
           -static-libstdc++ -static-libgcc \
-          server.cpp -o artifacts-arm64/server-arm64-static || \
-        (echo "C++20 failed, trying C++17..." && \
-         aarch64-linux-gnu-g++ -std=c++17 -Wall -pthread \
-          -static-libstdc++ -static-libgcc \
-          server.cpp -o artifacts-arm64/server-arm64-static)
+          server.cpp -o artifacts-arm64/server-arm64-static
     
     - name: Verify ARM64 builds
       run: |
