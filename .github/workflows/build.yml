@@ -20,33 +20,24 @@ jobs:
         g++ --version
         make --version
     
-    - name: Build standard binaries
-      run: make all
+    - name: Build server
+      run: make output/server
     
-    - name: Verify standard build
+    - name: Verify build
       run: |
         ls -lh output/
         file output/server
-        file output/client
     
     - name: Create artifacts directory
       run: mkdir -p artifacts
     
-    - name: Copy standard binaries
-      run: |
-        cp output/server artifacts/server
-        cp output/client artifacts/client
-        cp output/test_server artifacts/test_server
+    - name: Copy server binary
+      run: cp output/server artifacts/server
     
     - name: Build statically-linked server
       run: |
         g++ -std=c++20 -Wall -pthread -static-libstdc++ -static-libgcc \
           server.cpp -o artifacts/server-static
-    
-    - name: Build statically-linked client
-      run: |
-        g++ -std=c++20 -Wall -pthread -static-libstdc++ -static-libgcc \
-          client.cpp -o artifacts/client-static
     
     - name: Verify all builds
       run: |
@@ -68,17 +59,15 @@ jobs:
         name: can-server-binaries
         path: |
           artifacts/server
-          artifacts/client
           artifacts/server-static
-          artifacts/client-static
         retention-days: 30
     
     - name: Create release archives
       if: github.ref == 'refs/heads/main'
       run: |
         cd artifacts
-        tar -czf can-server-linux-x64.tar.gz server client
-        tar -czf can-server-linux-x64-static.tar.gz server-static client-static
+        tar -czf can-server-linux-x64.tar.gz server
+        tar -czf can-server-linux-x64-static.tar.gz server-static
         sha256sum *.tar.gz > checksums.txt
     
     - name: Upload release archives
@@ -112,19 +101,11 @@ jobs:
         aarch64-linux-gnu-g++ -std=c++20 -Wall -pthread \
           server.cpp -o artifacts-arm64/server-arm64
     
-    - name: Build ARM64 client
-      run: |
-        aarch64-linux-gnu-g++ -std=c++20 -Wall -pthread \
-          client.cpp -o artifacts-arm64/client-arm64
-    
-    - name: Build ARM64 static binaries
+    - name: Build ARM64 static server
       run: |
         aarch64-linux-gnu-g++ -std=c++20 -Wall -pthread \
           -static-libstdc++ -static-libgcc \
           server.cpp -o artifacts-arm64/server-arm64-static
-        aarch64-linux-gnu-g++ -std=c++20 -Wall -pthread \
-          -static-libstdc++ -static-libgcc \
-          client.cpp -o artifacts-arm64/client-arm64-static
     
     - name: Verify ARM64 builds
       run: |
@@ -143,8 +124,8 @@ jobs:
       if: github.ref == 'refs/heads/main'
       run: |
         cd artifacts-arm64
-        tar -czf can-server-linux-arm64.tar.gz server-arm64 client-arm64
-        tar -czf can-server-linux-arm64-static.tar.gz server-arm64-static client-arm64
+        tar -czf can-server-linux-arm64.tar.gz server-arm64
+        tar -czf can-server-linux-arm64-static.tar.gz server-arm64-static
         sha256sum *.tar.gz > checksums-arm64.txt
     
     - name: Upload ARM64 release archives
