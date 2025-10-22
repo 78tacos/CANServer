@@ -9,49 +9,58 @@ on:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
     
     steps:
     - name: Checkout code
       uses: actions/checkout@v4
     
-    - name: Install dependencies
+    - name: Setup environment
       run: |
-        sudo apt-get update
-        sudo apt-get install -y build-essential g++ make can-utils
+        g++ --version
+        make --version
     
-    - name: Build standard server
+    - name: Build standard binaries
+      run: make all
+    
+    - name: Verify standard build
       run: |
-        make all
-        mkdir -p artifacts
+        ls -lh output/
+        file output/server
+        file output/client
+    
+    - name: Create artifacts directory
+      run: mkdir -p artifacts
+    
+    - name: Copy standard binaries
+      run: |
         cp output/server artifacts/server
         cp output/client artifacts/client
+        cp output/test_server artifacts/test_server
     
     - name: Build statically-linked server
       run: |
-        g++ -std=c++20 -Wall -pthread -static -static-libgcc -static-libstdc++ \
-          server.cpp -o artifacts/server-static || \
         g++ -std=c++20 -Wall -pthread -static-libstdc++ -static-libgcc \
           server.cpp -o artifacts/server-static
     
     - name: Build statically-linked client
       run: |
-        g++ -std=c++20 -Wall -pthread -static -static-libgcc -static-libstdc++ \
-          client.cpp -o artifacts/client-static || \
         g++ -std=c++20 -Wall -pthread -static-libstdc++ -static-libgcc \
           client.cpp -o artifacts/client-static
     
-    - name: Verify builds
+    - name: Verify all builds
       run: |
+        echo "=== All artifacts ==="
         ls -lh artifacts/
-        file artifacts/server
-        file artifacts/server-static
+        echo ""
+        echo "=== File types ==="
+        file artifacts/*
+        echo ""
+        echo "=== Dynamic dependencies (standard) ==="
         ldd artifacts/server || true
-        ldd artifacts/server-static || echo "Static binary (no dynamic dependencies)"
-    
-    - name: Run tests
-      run: |
-        make test || echo "Tests not configured yet"
+        echo ""
+        echo "=== Dynamic dependencies (static) ==="
+        ldd artifacts/server-static || echo "Fully static (no dependencies)"
     
     - name: Upload artifacts
       uses: actions/upload-artifact@v4
@@ -83,7 +92,7 @@ jobs:
         retention-days: 90
 
   build-arm64:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
     
     steps:
     - name: Checkout code
@@ -94,22 +103,28 @@ jobs:
         sudo apt-get update
         sudo apt-get install -y g++-aarch64-linux-gnu
     
+    - name: Verify ARM64 toolchain
+      run: aarch64-linux-gnu-g++ --version
+    
     - name: Build ARM64 server
       run: |
         mkdir -p artifacts-arm64
         aarch64-linux-gnu-g++ -std=c++20 -Wall -pthread \
           server.cpp -o artifacts-arm64/server-arm64
     
-    - name: Build ARM64 static server
-      run: |
-        aarch64-linux-gnu-g++ -std=c++20 -Wall -pthread \
-          -static-libstdc++ -static-libgcc \
-          server.cpp -o artifacts-arm64/server-arm64-static
-    
     - name: Build ARM64 client
       run: |
         aarch64-linux-gnu-g++ -std=c++20 -Wall -pthread \
           client.cpp -o artifacts-arm64/client-arm64
+    
+    - name: Build ARM64 static binaries
+      run: |
+        aarch64-linux-gnu-g++ -std=c++20 -Wall -pthread \
+          -static-libstdc++ -static-libgcc \
+          server.cpp -o artifacts-arm64/server-arm64-static
+        aarch64-linux-gnu-g++ -std=c++20 -Wall -pthread \
+          -static-libstdc++ -static-libgcc \
+          client.cpp -o artifacts-arm64/client-arm64-static
     
     - name: Verify ARM64 builds
       run: |
