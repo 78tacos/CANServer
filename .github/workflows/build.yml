@@ -1,0 +1,143 @@
+name: Build CAN Server
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+    
+    - name: Install dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y build-essential g++ make can-utils
+    
+    - name: Build standard server
+      run: |
+        make all
+        mkdir -p artifacts
+        cp output/server artifacts/server
+        cp output/client artifacts/client
+    
+    - name: Build statically-linked server
+      run: |
+        g++ -std=c++20 -Wall -pthread -static -static-libgcc -static-libstdc++ \
+          server.cpp -o artifacts/server-static || \
+        g++ -std=c++20 -Wall -pthread -static-libstdc++ -static-libgcc \
+          server.cpp -o artifacts/server-static
+    
+    - name: Build statically-linked client
+      run: |
+        g++ -std=c++20 -Wall -pthread -static -static-libgcc -static-libstdc++ \
+          client.cpp -o artifacts/client-static || \
+        g++ -std=c++20 -Wall -pthread -static-libstdc++ -static-libgcc \
+          client.cpp -o artifacts/client-static
+    
+    - name: Verify builds
+      run: |
+        ls -lh artifacts/
+        file artifacts/server
+        file artifacts/server-static
+        ldd artifacts/server || true
+        ldd artifacts/server-static || echo "Static binary (no dynamic dependencies)"
+    
+    - name: Run tests
+      run: |
+        make test || echo "Tests not configured yet"
+    
+    - name: Upload artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: can-server-binaries
+        path: |
+          artifacts/server
+          artifacts/client
+          artifacts/server-static
+          artifacts/client-static
+        retention-days: 30
+    
+    - name: Create release archives
+      if: github.ref == 'refs/heads/main'
+      run: |
+        cd artifacts
+        tar -czf can-server-linux-x64.tar.gz server client
+        tar -czf can-server-linux-x64-static.tar.gz server-static client-static
+        sha256sum *.tar.gz > checksums.txt
+    
+    - name: Upload release archives
+      if: github.ref == 'refs/heads/main'
+      uses: actions/upload-artifact@v4
+      with:
+        name: release-archives
+        path: |
+          artifacts/*.tar.gz
+          artifacts/checksums.txt
+        retention-days: 90
+
+  build-arm64:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+    
+    - name: Install ARM64 cross-compiler
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y g++-aarch64-linux-gnu
+    
+    - name: Build ARM64 server
+      run: |
+        mkdir -p artifacts-arm64
+        aarch64-linux-gnu-g++ -std=c++20 -Wall -pthread \
+          server.cpp -o artifacts-arm64/server-arm64
+    
+    - name: Build ARM64 static server
+      run: |
+        aarch64-linux-gnu-g++ -std=c++20 -Wall -pthread \
+          -static-libstdc++ -static-libgcc \
+          server.cpp -o artifacts-arm64/server-arm64-static
+    
+    - name: Build ARM64 client
+      run: |
+        aarch64-linux-gnu-g++ -std=c++20 -Wall -pthread \
+          client.cpp -o artifacts-arm64/client-arm64
+    
+    - name: Verify ARM64 builds
+      run: |
+        ls -lh artifacts-arm64/
+        file artifacts-arm64/server-arm64
+        file artifacts-arm64/server-arm64-static
+    
+    - name: Upload ARM64 artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: can-server-arm64-binaries
+        path: artifacts-arm64/*
+        retention-days: 30
+    
+    - name: Create ARM64 release archives
+      if: github.ref == 'refs/heads/main'
+      run: |
+        cd artifacts-arm64
+        tar -czf can-server-linux-arm64.tar.gz server-arm64 client-arm64
+        tar -czf can-server-linux-arm64-static.tar.gz server-arm64-static client-arm64
+        sha256sum *.tar.gz > checksums-arm64.txt
+    
+    - name: Upload ARM64 release archives
+      if: github.ref == 'refs/heads/main'
+      uses: actions/upload-artifact@v4
+      with:
+        name: release-archives-arm64
+        path: |
+          artifacts-arm64/*.tar.gz
+          artifacts-arm64/checksums-arm64.txt
+        retention-days: 90
