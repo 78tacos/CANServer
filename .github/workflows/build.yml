@@ -98,23 +98,40 @@ jobs:
         echo "C++ includes path:"
         aarch64-linux-gnu-g++ -E -x c++ - -v < /dev/null 2>&1 | grep -A 10 "#include"
     
-    - name: Build ARM64 server (C++20)
+    - name: Build ARM64 server (dynamic)
       run: |
         mkdir -p artifacts-arm64
         aarch64-linux-gnu-g++ -std=c++20 -Wall -pthread \
           server.cpp -o artifacts-arm64/server-arm64
     
-    - name: Build ARM64 static server (C++20)
+    - name: Build ARM64 server (fully static)
       run: |
+        aarch64-linux-gnu-g++ -std=c++20 -Wall -pthread \
+          -static \
+          server.cpp -o artifacts-arm64/server-arm64-static
+    
+    - name: Build ARM64 server (partial static - fallback)
+      if: failure()
+      run: |
+        echo "Full static build failed, trying partial static..."
         aarch64-linux-gnu-g++ -std=c++20 -Wall -pthread \
           -static-libstdc++ -static-libgcc \
           server.cpp -o artifacts-arm64/server-arm64-static
     
     - name: Verify ARM64 builds
       run: |
+        echo "=== Build artifacts ==="
         ls -lh artifacts-arm64/
+        echo ""
+        echo "=== File types ==="
         file artifacts-arm64/server-arm64
         file artifacts-arm64/server-arm64-static
+        echo ""
+        echo "=== Dynamic binary dependencies ==="
+        aarch64-linux-gnu-readelf -d artifacts-arm64/server-arm64 | grep NEEDED || true
+        echo ""
+        echo "=== Static binary dependencies ==="
+        aarch64-linux-gnu-readelf -d artifacts-arm64/server-arm64-static | grep NEEDED || echo "Fully static (no dependencies)"
     
     - name: Upload ARM64 artifacts
       uses: actions/upload-artifact@v4
