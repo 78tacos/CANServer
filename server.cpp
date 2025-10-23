@@ -1145,21 +1145,6 @@ int main(int argc, char* argv[]) {
             };
             */
 
-            commandMap["KILL_ALL_TASKS"] = [&](const std::string&) {
-                logEvent(INFO, "Received KILL_ALL_TASKS command from " + std::string(s));
-                for (auto& [id, active] : taskActive) {
-                    *active = false;  // Stop all rescheduling
-                }
-                taskPauses.clear();
-                taskDetails.clear();
-                taskActive.clear();
-                {
-                    std::lock_guard<std::mutex> lock(globalErrorMutex);
-                    globalTaskErrors.clear();  // Clean up all error messages
-                }
-                send(new_fd, "All tasks killed\n", 17, 0);
-            };
-
             commandMap["LIST_THREADS"] = [&](const std::string&) { //not sure about this
                 logEvent(INFO, "Received LIST_THREADS command from " + std::string(s));
                 send(new_fd, registry.toString().c_str(), registry.toString().size(), 0);
