@@ -24,12 +24,14 @@
     "workspaceFolder": "/workspace",
     "remoteUser": "vscode",
     //"postCreateCommand": "sudo modprobe vcan || true", //for testing
+    "forwardPorts": [8828, 50123],
     "capAdd": [
         "NET_RAW",
-        "SYS_NICE",
-        "NET_ADMIN"
+        "SYS_NICE" //only used for real-time scheduling of CAN threads. can disable
+        //,"NET_ADMIN" for vcan testing
     ],
     "runArgs": [
-        "--privileged"
+        "--privileged", //can disable if necessary
+        "--network=host"
     ]
 }

@@ -1,10 +1,7 @@
-# Use an official base image
 FROM ubuntu:24.04
 
-# Avoid prompts from apt
 ENV DEBIAN_FRONTEND=noninteractive
 
-# Install essential build tools and dependencies for native and ARM64 cross-compilation
 RUN apt-get update && apt-get install -y \
     build-essential \
     make \
@@ -40,14 +37,10 @@ RUN groupadd --gid $USER_GID $USERNAME \
     && echo $USERNAME ALL=\(root\) NOPASSWD:ALL > /etc/sudoers.d/$USERNAME \
     && chmod 0440 /etc/sudoers.d/$USERNAME
 
-# Set the working directory
 WORKDIR /workspace
 
-# Change ownership of the workspace
 RUN chown -R $USERNAME:$USERNAME /workspace
 
-# Switch to non-root user
 USER $USERNAME
 
-# Set the default shell
 CMD ["/bin/bash"]
