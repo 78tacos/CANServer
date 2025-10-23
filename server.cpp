@@ -240,6 +240,7 @@ static std::atomic<bool> restartRequested{false};
 
 // Flag set by signal handler to request server shutdown
 static volatile sig_atomic_t shutdownRequested = 0;
+static std::atomic<int> listeningSocketFd{-1};
 
 // Signal handler for SIGINT/SIGTERM to request graceful shutdown
 void shutdown_handler(int) {
@@ -333,6 +334,25 @@ void logEvent(int level, const std::string& message) { //logging with hierarchy
     log.flush();
     // ensure readable by shell
     chmod(logPath.c_str(), 0644); // ignore failure
+}
+
+void wakeListeningSocket() {
+    int fd = listeningSocketFd.load();
+    if (fd < 0) {
+        return;
+    }
+
+    if (::shutdown(fd, SHUT_RDWR) == -1) {
+        int err = errno;
+        if (err != ENOTCONN && err != EINVAL && err != EBADF) {
+            logEvent(WARNING, "Failed to shutdown listening socket: " + std::string(strerror(err)));
+        }
+    }
+}
+
+void requestGracefulShutdown() {
+    shutdownRequested = 1;
+    wakeListeningSocket();
 }
 
 /**
@@ -736,6 +756,8 @@ int main(int argc, char* argv[]) {
         throw std::system_error(errno, std::generic_category(), "listen");
     }
 
+    listeningSocketFd.store(sockfd);
+
     sa.sa_handler = sigchld_handler; // Reap all dead processes
     sigemptyset(&sa.sa_mask);
     sa.sa_flags = SA_RESTART;
@@ -743,6 +765,9 @@ int main(int argc, char* argv[]) {
         logEvent(ERROR, "server: sigaction");
         throw std::system_error(errno, std::generic_category(), "sigaction");
     }
+
+    // Ignore SIGPIPE so server doesn't crash when writing to closed client sockets
+    signal(SIGPIPE, SIG_IGN);
 
     // Install shutdown handlers for SIGINT and SIGTERM so we can clean up child processes
     struct sigaction sa_shutdown{};
@@ -823,7 +848,7 @@ int main(int argc, char* argv[]) {
 
             commandMap["SHUTDOWN"] = [&](const std::string&) { //shutdown server
                 logEvent(INFO, "Received SHUTDOWN command from " + std::string(s));
-                shutdownRequested = true;
+                requestGracefulShutdown();
             };
 
             commandMap["DISCONNECT"] = [&](const std::string&) {
@@ -838,6 +863,7 @@ int main(int argc, char* argv[]) {
                 send(new_fd, resp, std::strlen(resp), 0);
             };
 
+            /*
             commandMap["KILL_ALL"] = [&](const std::string&) { // kills all processes started by this client. not sure of usefulness yet. doesn't seem to work right
                 logEvent(INFO, "Received KILL_ALL command from " + std::string(s));
                 for (auto pid : clientPids) {
@@ -848,17 +874,33 @@ int main(int argc, char* argv[]) {
                 clientPids.clear();
                 send(new_fd, "All processes killed.\n", 48, 0);
             };
+            */
+
+            commandMap["KILL_ALL_TASKS"] = [&](const std::string&) {
+                logEvent(INFO, "Received KILL_ALL_TASKS command from " + std::string(s));
+                for (auto& [id, active] : taskActive) {
+                    *active = false;  // Stop all rescheduling
+                }
+                taskPauses.clear();
+                taskDetails.clear();
+                taskActive.clear();
+                {
+                    std::lock_guard<std::mutex> lock(globalErrorMutex);
+                    globalTaskErrors.clear();  // Clean up all error messages
+                }
+                send(new_fd, "All tasks killed\n", 17, 0);
+            };
 
             commandMap["LIST_THREADS"] = [&](const std::string&) { //not sure about this
                 logEvent(INFO, "Received LIST_THREADS command from " + std::string(s));
                 send(new_fd, registry.toString().c_str(), registry.toString().size(), 0);
             };
 
-            commandMap["RESTART"] = [&](const std::string&) { //doesn't work yet
+            commandMap["RESTART"] = [&](const std::string&) { //does it work?
                 logEvent(INFO, "Received RESTART command from " + std::string(s));
                 send(new_fd, "Server restarting...\n", 21, 0);
                 restartRequested.store(true);
-                // close the listening socket by requesting shutdown; main loop will handle restart
+                requestGracefulShutdown();
             };
 
             commandMap["KILL_THREAD "] = [&](const std::string& msg) {
@@ -1334,6 +1376,7 @@ int main(int argc, char* argv[]) {
 
     // Close the listening socket to stop accepting new connections
     close(sockfd);
+    listeningSocketFd.store(-1);
 
     // Best-effort: terminate any remaining child processes we tracked
     {

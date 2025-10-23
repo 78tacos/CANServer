@@ -59,6 +59,8 @@ SERVER_PORT=50123
 ```
 
 ## Running
+
+### Basic (two terminals)
 Terminal 1:
 ```bash
 ./output/server output/server.conf
@@ -67,6 +69,32 @@ Terminal 1:
 Terminal 2:
 ```bash
 ./output/client output/client.conf
+```
+
+### Using tmux (recommended for SSH sessions)
+Tmux keeps your server running even if your SSH connection drops.
+
+```bash
+# Start a new tmux session
+tmux new -s canserver
+
+# Run the server
+./output/server output/server.conf
+
+# Detach from session: Press Ctrl+b, then d
+# Server continues running in background
+
+# Open client in a new terminal
+./output/client output/client.conf
+
+# Reattach to server session anytime
+tmux attach -t canserver
+
+# List all sessions
+tmux ls
+
+# Kill session when done
+tmux kill-session -t canserver
 ```
 
 ## Protocol Reference

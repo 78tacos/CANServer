@@ -6,6 +6,7 @@ client
 *.app
 output/
 .ignore/
+outputarm/
 
 # Object files
 *.o
@@ -73,9 +74,8 @@ client.log
 
 # Configuration (keep templates)
 *.conf
-!*.conf.example
-!output/server.conf.template
-!output/client.conf.template
+!example_server.conf
+!example_client.conf
 
 # Core dumps
 core
@@ -110,6 +110,3 @@ vgcore.*
 *.tmp
 *.temp
 .#*
-output/client.conf
-output/server
-output/server.log
