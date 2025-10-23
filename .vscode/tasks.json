@@ -25,15 +25,8 @@
     {
       "label": "Build Server (ARM64)",
       "type": "shell",
-      "command": "aarch64-linux-gnu-g++",
-      "args": [
-          "-std=c++20",
-          "-Wall",
-          "-pthread",
-          "server.cpp",
-          "-o",
-          "outputarm/server"
-      ],
+      "command": "make",
+      "args": ["server_arm"],
       "group": {
           "kind": "build",
           "isDefault": true

@@ -7,7 +7,6 @@ ENV DEBIAN_FRONTEND=noninteractive
 # Install essential build tools and dependencies for native and ARM64 cross-compilation
 RUN apt-get update && apt-get install -y \
     build-essential \
-    g++ \
     make \
     git \
     curl \
@@ -33,7 +32,7 @@ RUN apt-get update && apt-get install -y \
 
 # Create a non-root user for development
 ARG USERNAME=vscode
-ARG USER_UID=1000
+ARG USER_UID=1010
 ARG USER_GID=$USER_UID
 
 RUN groupadd --gid $USER_GID $USERNAME \
