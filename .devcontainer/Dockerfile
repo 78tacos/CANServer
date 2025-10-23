@@ -23,8 +23,11 @@ RUN apt-get update && apt-get install -y \
     iproute2 \
     kmod \
     libcap2-bin \
-    g++-aarch64-linux-gnu \
-    gcc-aarch64-linux-gnu \
+# Install newer GCC/G++ (provide C++20 support) and matching cross-compilers
+    g++-13 \
+    gcc-13 \
+    g++-13-aarch64-linux-gnu \
+    gcc-13-aarch64-linux-gnu \
     binutils-aarch64-linux-gnu \
     && rm -rf /var/lib/apt/lists/*
 
