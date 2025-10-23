@@ -4,21 +4,28 @@ FROM ubuntu:24.04
 # Avoid prompts from apt
 ENV DEBIAN_FRONTEND=noninteractive
 
-# Install essential build tools and dependencies
+# Install essential build tools and dependencies for native and ARM64 cross-compilation
 RUN apt-get update && apt-get install -y \
     build-essential \
-    cmake \
+    g++ \
+    make \
     git \
     curl \
-    wget \
-    qt6 \
-    python3 \
     vim \
     nano \
     sudo \
     ca-certificates \
-    gnupg \
     lsb-release \
+    pkg-config \
+    gdb \
+    strace \
+    can-utils \
+    iproute2 \
+    kmod \
+    libcap2-bin \
+    g++-aarch64-linux-gnu \
+    gcc-aarch64-linux-gnu \
+    binutils-aarch64-linux-gnu \
     && rm -rf /var/lib/apt/lists/*
 
 # Create a non-root user for development
