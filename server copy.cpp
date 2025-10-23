@@ -133,14 +133,6 @@
 #include <sstream>
 #include <unordered_map>
 #include <memory>
-#include <cctype>
-#include <pthread.h>
-#include <sched.h>
-#include <time.h>
-#include <linux/can.h>
-#include <linux/can/raw.h>
-#include <sys/ioctl.h>
-#include <net/if.h>
 
 #define BACKLOG 10
 #define MAXDATASIZE 10000
@@ -239,20 +231,6 @@ std::mutex globalPidMutex;  // Protect the global map (at all costs)
 // Add a new global map for task error messages
 std::unordered_map<std::string, std::string> globalTaskErrors;
 std::mutex globalErrorMutex;
-
-// Cached CAN RAW sockets per interface
-std::unordered_map<std::string, int> globalCanSockets;
-std::mutex globalCanSocketMutex;
-
-void closeAllCanSockets() {
-    std::lock_guard<std::mutex> lock(globalCanSocketMutex);
-    for (auto& entry : globalCanSockets) {
-        if (entry.second >= 0) {
-            close(entry.second);
-        }
-    }
-    globalCanSockets.clear();
-}
 
 // Configurable log path (can be set from config file or SERVER_LOG_PATH env var)
 static std::string g_logPath;
@@ -357,229 +335,6 @@ void logEvent(int level, const std::string& message) { //logging with hierarchy
     chmod(logPath.c_str(), 0644); // ignore failure
 }
 
-void trySetRealtimeScheduling(const std::string& threadName, int priority) {
-    static std::atomic<bool> warnedOnce{false};
-    static std::atomic<bool> successLogged{false};
-    struct sched_param param;
-    param.sched_priority = priority;
-
-    int rc = pthread_setschedparam(pthread_self(), SCHED_FIFO, &param);
-    if (rc == 0) {
-        if (!successLogged.exchange(true)) {
-            logEvent(INFO, "Applied SCHED_FIFO priority " + std::to_string(priority) + " to " + threadName);
-        }
-    } else {
-        if (rc == EPERM) {
-            if (!warnedOnce.exchange(true)) {
-                logEvent(WARNING, "Insufficient privileges to apply SCHED_FIFO priority to " + threadName + ". Run as root or grant CAP_SYS_NICE.");
-            }
-        } else {
-            logEvent(WARNING, "Failed to apply SCHED_FIFO priority to " + threadName + ": " + std::strerror(rc));
-        }
-    }
-}
-
-bool parseCanFrame(const std::string& frameStr, struct can_frame& frame, std::string& error) {
-    auto hashPos = frameStr.find('#');
-    if (hashPos == std::string::npos) {
-        error = "Missing '#' separator";
-        return false;
-    }
-
-    std::string idStr = trim(frameStr.substr(0, hashPos));
-    std::string dataStr = trim(frameStr.substr(hashPos + 1));
-
-    if (idStr.empty()) {
-        error = "Empty CAN ID";
-        return false;
-    }
-
-    if (idStr.rfind("0x", 0) == 0 || idStr.rfind("0X", 0) == 0) {
-        idStr = idStr.substr(2);
-    }
-
-    unsigned long canId = 0;
-    try {
-        canId = std::stoul(idStr, nullptr, 16);
-    } catch (...) {
-        error = "Invalid CAN ID";
-        return false;
-    }
-
-    if (canId > CAN_EFF_MASK) {
-        error = "CAN ID out of range";
-        return false;
-    }
-
-    frame.can_id = static_cast<canid_t>(canId);
-    if (canId > CAN_SFF_MASK) {
-        frame.can_id |= CAN_EFF_FLAG;
-    }
-
-    // Remote frames not supported yet via raw sockets; fall back to cansend in that case
-    if (!dataStr.empty() && (dataStr == "R" || dataStr == "r")) {
-        error = "RTR frame not supported";
-        return false;
-    }
-
-    std::string hexData;
-    hexData.reserve(dataStr.size());
-    for (char c : dataStr) {
-        if (std::isspace(static_cast<unsigned char>(c)) || c == '.' || c == '-') {
-            continue;
-        }
-        hexData.push_back(c);
-    }
-
-    if (hexData.empty()) {
-        frame.can_dlc = 0;
-        std::memset(frame.data, 0, sizeof(frame.data));
-        return true;
-    }
-
-    if (hexData.size() % 2 != 0) {
-        error = "Payload must have an even number of hex characters";
-        return false;
-    }
-
-    auto byteCount = hexData.size() / 2;
-    if (byteCount > sizeof(frame.data)) {
-        error = "Payload exceeds 8 bytes";
-        return false;
-    }
-
-    frame.can_dlc = static_cast<__u8>(byteCount);
-    for (size_t i = 0; i < byteCount; ++i) {
-        std::string byteStr = hexData.substr(i * 2, 2);
-        try {
-            frame.data[i] = static_cast<__u8>(std::stoul(byteStr, nullptr, 16));
-        } catch (...) {
-            error = "Invalid payload byte";
-            return false;
-        }
-    }
-    return true;
-}
-
-bool sendCanFrameRaw(const std::string& interface, const std::string& frameStr, std::string& error) {
-    struct can_frame frame{};
-    if (!parseCanFrame(frameStr, frame, error)) {
-        return false;
-    }
-
-    int sock = -1;
-    {
-        std::lock_guard<std::mutex> lock(globalCanSocketMutex);
-        auto it = globalCanSockets.find(interface);
-        if (it != globalCanSockets.end()) {
-            sock = it->second;
-        } else {
-            int newSock = socket(PF_CAN, SOCK_RAW, CAN_RAW);
-            if (newSock == -1) {
-                error = std::string("socket() failed: ") + std::strerror(errno);
-                return false;
-            }
-
-            struct ifreq ifr{};
-            if (interface.size() >= IFNAMSIZ) {
-                close(newSock);
-                error = "Interface name too long";
-                return false;
-            }
-            std::strncpy(ifr.ifr_name, interface.c_str(), IFNAMSIZ - 1);
-            if (ioctl(newSock, SIOCGIFINDEX, &ifr) == -1) {
-                error = std::string("ioctl(SIOCGIFINDEX) failed: ") + std::strerror(errno);
-                close(newSock);
-                return false;
-            }
-
-            struct sockaddr_can addr{};
-            addr.can_family = AF_CAN;
-            addr.can_ifindex = ifr.ifr_ifindex;
-            if (bind(newSock, reinterpret_cast<struct sockaddr*>(&addr), sizeof(addr)) == -1) {
-                error = std::string("bind() failed: ") + std::strerror(errno);
-                close(newSock);
-                return false;
-            }
-
-            globalCanSockets.emplace(interface, newSock);
-            sock = newSock;
-        }
-    }
-
-    ssize_t written = write(sock, &frame, sizeof(frame));
-    if (written != sizeof(frame)) {
-        error = written == -1 ? std::string("write() failed: ") + std::strerror(errno)
-                              : "write() wrote partial frame";
-        std::lock_guard<std::mutex> lock(globalCanSocketMutex);
-        auto it = globalCanSockets.find(interface);
-        if (it != globalCanSockets.end() && it->second == sock) {
-            close(sock);
-            globalCanSockets.erase(it);
-        }
-        return false;
-    }
-
-    return true;
-}
-
-bool runCansendFallback(const std::string& command,
-                        const std::string& taskId,
-                        const std::shared_ptr<bool>& activeFlag) {
-    pid_t pid = fork();
-    if (pid == 0) {
-        prctl(PR_SET_PDEATHSIG, SIGTERM);
-        execl("/bin/sh", "sh", "-c", command.c_str(), nullptr);
-        _exit(1);
-    } else if (pid > 0) {
-        {
-            std::lock_guard<std::mutex> lock(globalPidMutex);
-            globalPidToTaskId[pid] = taskId;
-        }
-
-        int status;
-        pid_t result = waitpid(pid, &status, 0);
-        bool success = true;
-        std::string errorMsg;
-
-        if (result > 0) {
-            if (WIFEXITED(status) && WEXITSTATUS(status) != 0) {
-                success = false;
-                errorMsg = "cansend failed with exit code " + std::to_string(WEXITSTATUS(status));
-            } else if (WIFSIGNALED(status)) {
-                success = false;
-                errorMsg = "cansend terminated by signal " + std::to_string(WTERMSIG(status));
-            }
-        } else {
-            success = false;
-            errorMsg = "waitpid failed: " + std::string(std::strerror(errno));
-        }
-
-        {
-            std::lock_guard<std::mutex> lock(globalPidMutex);
-            globalPidToTaskId.erase(pid);
-        }
-
-        if (!success) {
-            *activeFlag = false;
-            logEvent(ERROR, "Task " + taskId + " stopped: " + errorMsg);
-            std::lock_guard<std::mutex> lock(globalErrorMutex);
-            globalTaskErrors[taskId] = errorMsg;
-        }
-
-        return success;
-    } else {
-        std::string errorMsg = std::string("fork() failed: ") + std::strerror(errno);
-        logEvent(ERROR, "Task " + taskId + " fallback cansend fork failed: " + errorMsg);
-        *activeFlag = false;
-        {
-            std::lock_guard<std::mutex> lock(globalErrorMutex);
-            globalTaskErrors[taskId] = "fork() failed: system resource limit reached";
-        }
-        return false;
-    }
-}
-
 /**
  * @class ThreadPool
  * @brief A thread pool implementation that manages a fixed number of worker threads to execute tasks asynchronously.
@@ -628,7 +383,6 @@ public:
         for (size_t i = 0; i < n; ++i) {
             threads.emplace_back([this] {
                 registry.add(std::this_thread::get_id(), "thread pool worker");
-                trySetRealtimeScheduling("thread pool worker", 20);
                 for (;;) {
                     Task task;
                     {
@@ -652,7 +406,6 @@ public:
 
         timerThread = std::thread([this] {
             registry.add(std::this_thread::get_id(), "thread pool timer");
-            trySetRealtimeScheduling("thread pool timer", 25);
             std::unique_lock<std::mutex> lock(timerMutex);
             while (!stop.load()) {
                 if (timedQueue.empty()) {
@@ -665,32 +418,10 @@ public:
                     break;
                 }
 
-                if (timerCv.wait_until(lock, nextRun, [this, nextRun] {
-                        return stop.load() || timedQueue.empty() || timedQueue.top().runAt < nextRun;
-                    })) {
-                    continue;
-                }
-
                 auto now = std::chrono::steady_clock::now();
                 if (now < nextRun) {
-                    lock.unlock();
-                    auto remaining = nextRun - now;
-                    struct timespec ts;
-                    auto nano = std::chrono::duration_cast<std::chrono::nanoseconds>(remaining);
-                    ts.tv_sec = static_cast<time_t>(nano.count() / 1000000000LL);
-                    ts.tv_nsec = static_cast<long>(nano.count() % 1000000000LL);
-                    struct timespec rem{};
-                    int rc;
-                    do {
-                        rc = clock_nanosleep(CLOCK_MONOTONIC, 0, &ts, &rem);
-                        if (rc == EINTR) {
-                            ts = rem;
-                        }
-                    } while (rc == EINTR && !stop.load());
-                    lock.lock();
-                    if (rc != 0) {
-                        continue;
-                    }
+                    timerCv.wait_until(lock, nextRun);
+                    continue;
                 }
 
                 TimedTask task = std::move(timedQueue.top());
@@ -1269,45 +1000,77 @@ int main(int argc, char* argv[]) {
                 send(new_fd, response.c_str(), response.size(), 0);
             };
 
-            auto runCansendCommand = [&](const std::string& canBus,
-                                         const std::string& canFrame,
-                                         const std::string& command,
+            auto runCansendCommand = [&](const std::string& cmd,
                                          const std::string& taskId,
                                          const std::shared_ptr<bool>& activeFlag) -> bool {
-                std::string error;
-                if (sendCanFrameRaw(canBus, canFrame, error)) {
-                    logEvent(DEBUG, "Sent CAN frame via raw socket on " + canBus + ": " + canFrame);
-                    return true;
-                }
+                pid_t pid = fork();
+                if (pid == 0) {
+                    // Ensure child dies if parent exits unexpectedly
+                    prctl(PR_SET_PDEATHSIG, SIGTERM);
+                    execl("/bin/sh", "sh", "-c", cmd.c_str(), NULL);
+                    _exit(1);
+                } else if (pid > 0) {
+                    {
+                        std::lock_guard<std::mutex> lock(globalPidMutex);
+                        globalPidToTaskId[pid] = taskId;
+                    }
 
-                logEvent(WARNING, "Raw CAN send failed on " + canBus + " for frame " + canFrame + ": " + error + ". Falling back to cansend.");
-                return runCansendFallback(command, taskId, activeFlag);
+                    int status;
+                    pid_t result = waitpid(pid, &status, 0);
+                    bool success = true;
+                    std::string errorMsg;
+
+                    if (result > 0) {
+                        if (WIFEXITED(status) && WEXITSTATUS(status) != 0) {
+                            success = false;
+                            errorMsg = "cansend failed with exit code " + std::to_string(WEXITSTATUS(status));
+                        } else if (WIFSIGNALED(status)) {
+                            success = false;
+                            errorMsg = "cansend terminated by signal " + std::to_string(WTERMSIG(status));
+                        }
+                    } else {
+                        success = false;
+                        errorMsg = "waitpid failed: " + std::string(strerror(errno));
+                    }
+
+                    {
+                        std::lock_guard<std::mutex> lock(globalPidMutex);
+                        globalPidToTaskId.erase(pid);
+                    }
+
+                    if (!success) {
+                        *activeFlag = false;
+                        logEvent(ERROR, "Task " + taskId + " stopped: " + errorMsg);
+                        std::lock_guard<std::mutex> lock(globalErrorMutex);
+                        globalTaskErrors[taskId] = errorMsg;
+                    }
+
+                    return success;
+                } else {
+                    std::string errorMsg = "fork() failed for task " + taskId + ": " + std::string(strerror(errno));
+                    logEvent(ERROR, errorMsg);
+                    *activeFlag = false;
+                    {
+                        std::lock_guard<std::mutex> lock(globalErrorMutex);
+                        globalTaskErrors[taskId] = "fork() failed: system resource limit reached";
+                    }
+                    return false;
+                }
             };
 
-            auto setupRecurringCansend = [&](const std::string& canBus,
-                                             const std::string& canFrame,
-                                             const std::string& commandString,
-                                             int intervalMs,
-                                             int priority,
-                                             ThreadPool& pool,
-                                             std::unordered_map<std::string, std::shared_ptr<bool>>& taskPauses,
-                                             std::unordered_map<std::string, std::shared_ptr<bool>>& taskActive,
-                                             std::unordered_map<std::string, std::string>& taskDetails,
-                                             std::atomic<int>& taskCounter) -> std::string {
+            auto setupRecurringCansend = [&](const std::string& cmd, int ct, int priority, ThreadPool& pool, std::vector<pid_t>& clientPids, std::unordered_map<std::string, std::shared_ptr<bool>>& taskPauses, std::unordered_map<std::string, std::shared_ptr<bool>>& taskActive, std::unordered_map<std::string, std::string>& taskDetails, std::atomic<int>& taskCounter) -> std::string {
                 std::string taskId = "task_" + std::to_string(taskCounter++);
                 auto pauseFlag = std::make_shared<bool>(false);
                 auto activeFlag = std::make_shared<bool>(true);
                 
                 taskPauses[taskId] = pauseFlag;
                 taskActive[taskId] = activeFlag;
-                taskDetails[taskId] = commandString + " every " + std::to_string(intervalMs) + "ms priority " + std::to_string(priority);
+                taskDetails[taskId] = cmd + " every " + std::to_string(ct) + "ms priority " + std::to_string(priority);
                 
                 // Capture shared_ptrs directly instead of accessing via maps
                 auto recurring = std::make_shared<std::function<void()>>();
-                std::string busCopy = canBus; // snapshot the bus
-                std::string frameCopy = canFrame; // snapshot the frame
-                std::string commandCopy = commandString;
-                int interval = intervalMs; // snapshot the interval
+                std::string m = cmd; // snapshot the command
+                int interval = ct; // snapshot the interval
 
                 auto enqueueRecurring = [&pool, interval, priority, recurring]() {
                     pool.enqueue_after(std::chrono::milliseconds(interval),
@@ -1322,22 +1085,11 @@ int main(int argc, char* argv[]) {
                 };
 
                 // Capture the shared_ptrs by value, not by accessing maps
-                *recurring = [recurring,
-                               busCopy,
-                               frameCopy,
-                               commandCopy,
-                               interval,
-                               &pool,
-                               priority,
-                               taskId,
-                               pauseFlag,
-                               activeFlag,
-                               enqueueRecurring,
-                               &runCansendCommand]() mutable {
+                *recurring = [recurring, m, interval, &pool, priority, &clientPids, taskId, pauseFlag, activeFlag, enqueueRecurring, &runCansendCommand]() mutable {
                     if (!*activeFlag) return;
                     
                     if (!*pauseFlag) {
-                        runCansendCommand(busCopy, frameCopy, commandCopy, taskId, activeFlag);
+                        runCansendCommand(m, taskId, activeFlag);
                     }
                     
                     if (*activeFlag) {
@@ -1349,9 +1101,7 @@ int main(int argc, char* argv[]) {
                 return taskId;
             };
 
-            auto setupSingleShotCansend = [&](const std::string& canBus,
-                                              const std::string& canFrame,
-                                              const std::string& commandString,
+            auto setupSingleShotCansend = [&](const std::string& cmd,
                                               int delayMs,
                                               int priority,
                                               ThreadPool& pool,
@@ -1365,13 +1115,11 @@ int main(int argc, char* argv[]) {
 
                 taskPauses[taskId] = pauseFlag;
                 taskActive[taskId] = activeFlag;
-                taskDetails[taskId] = commandString + " once after " + std::to_string(delayMs) + "ms priority " + std::to_string(priority);
+                taskDetails[taskId] = cmd + " once after " + std::to_string(delayMs) + "ms priority " + std::to_string(priority);
 
                 auto singleShot = std::make_shared<std::function<void()>>();
                 *singleShot = [singleShot,
-                               canBus,
-                               canFrame,
-                               commandString,
+                               cmd,
                                taskId,
                                pauseFlag,
                                activeFlag,
@@ -1392,12 +1140,12 @@ int main(int argc, char* argv[]) {
                         return;
                     }
 
-                    bool success = runCansendCommand(canBus, canFrame, commandString, taskId, activeFlag);
+                    bool success = runCansendCommand(cmd, taskId, activeFlag);
                     if (success) {
                         *activeFlag = false;
-                        taskDetails[taskId] = commandString + " once (completed)";
+                        taskDetails[taskId] = cmd + " once (completed)";
                     } else {
-                        taskDetails[taskId] = commandString + " once (error)";
+                        taskDetails[taskId] = cmd + " once (error)";
                     }
                 };
 
@@ -1516,16 +1264,7 @@ int main(int argc, char* argv[]) {
                         }
 
                         logEvent(INFO, "Parsed SEND_TASK: " + cfg.canBus + " " + cfg.canIdData + " in " + std::to_string(cfg.intervalMs) + "ms priority " + std::to_string(cfg.priority) + " from " + std::string(s));
-                        std::string taskId = setupSingleShotCansend(cfg.canBus,
-                                                                    cfg.canIdData,
-                                                                    cfg.command,
-                                                                    cfg.intervalMs,
-                                                                    cfg.priority,
-                                                                    *pool,
-                                                                    taskPauses,
-                                                                    taskActive,
-                                                                    taskDetails,
-                                                                    taskCounter);
+                        std::string taskId = setupSingleShotCansend(cfg.command, cfg.intervalMs, cfg.priority, *pool, taskPauses, taskActive, taskDetails, taskCounter);
                         std::string response = "OK: SEND_TASK scheduled with task ID: " + taskId + "\n";
                         send(new_fd, response.c_str(), response.size(), 0);
                     } else if (receivedMsg.rfind("CANSEND#", 0) == 0) {
@@ -1539,16 +1278,7 @@ int main(int argc, char* argv[]) {
                         }
 
                         logEvent(INFO, "Parsed CANSEND: " + cfg.canBus + " " + cfg.canIdData + " every " + std::to_string(cfg.intervalMs) + "ms priority " + std::to_string(cfg.priority) + " from " + std::string(s));
-                        std::string taskId = setupRecurringCansend(cfg.canBus,
-                                                                   cfg.canIdData,
-                                                                   cfg.command,
-                                                                   cfg.intervalMs,
-                                                                   cfg.priority,
-                                                                   *pool,
-                                                                   taskPauses,
-                                                                   taskActive,
-                                                                   taskDetails,
-                                                                   taskCounter);
+                        std::string taskId = setupRecurringCansend(cfg.command, cfg.intervalMs, cfg.priority, *pool, clientPids, taskPauses, taskActive, taskDetails, taskCounter);
                         std::string response = "OK: CANSEND scheduled with task ID: " + taskId + "\n";
                         send(new_fd, response.c_str(), response.size(), 0);
                     } else {
@@ -1630,8 +1360,6 @@ int main(int argc, char* argv[]) {
         // If execv returns, log and fall through to exit
         logEvent(ERROR, "execv failed: " + std::string(strerror(errno)));
     }
-
-    closeAllCanSockets();
 
     return 0;
 }
