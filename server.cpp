@@ -110,6 +110,7 @@
 #include <netinet/in.h>
 #include <netdb.h>
 #include <arpa/inet.h>
+#include <netinet/tcp.h>
 #include <sys/wait.h>
 #include <signal.h>
 #include <cerrno>
@@ -358,6 +359,37 @@ void logEvent(int level, const std::string& message) { //logging with hierarchy
     chmod(logPath.c_str(), 0644); // ignore failure
 }
 
+void configureTcpKeepalive(int fd,
+                           int idleSeconds = 60,
+                           int intervalSeconds = 10,
+                           int probeCount = 5) {
+    int keepalive = 1;
+    if (setsockopt(fd, SOL_SOCKET, SO_KEEPALIVE, &keepalive, sizeof(keepalive)) == -1) {
+        logEvent(WARNING, "Failed to enable SO_KEEPALIVE: " + std::string(strerror(errno)));
+        return;
+    }
+
+#if defined(TCP_KEEPIDLE)
+    if (setsockopt(fd, IPPROTO_TCP, TCP_KEEPIDLE, &idleSeconds, sizeof(idleSeconds)) == -1) {
+        logEvent(WARNING, "Failed to set TCP_KEEPIDLE: " + std::string(strerror(errno)));
+    }
+#endif
+#if defined(TCP_KEEPINTVL)
+    if (setsockopt(fd, IPPROTO_TCP, TCP_KEEPINTVL, &intervalSeconds, sizeof(intervalSeconds)) == -1) {
+        logEvent(WARNING, "Failed to set TCP_KEEPINTVL: " + std::string(strerror(errno)));
+    }
+#endif
+#if defined(TCP_KEEPCNT)
+    if (setsockopt(fd, IPPROTO_TCP, TCP_KEEPCNT, &probeCount, sizeof(probeCount)) == -1) {
+        logEvent(WARNING, "Failed to set TCP_KEEPCNT: " + std::string(strerror(errno)));
+    }
+#endif
+
+    logEvent(DEBUG, "Enabled TCP keepalive (idle=" + std::to_string(idleSeconds) +
+                    "s interval=" + std::to_string(intervalSeconds) +
+                    "s count=" + std::to_string(probeCount) + ")");
+}
+
 void wakeListeningSocket() {
     int fd = listeningSocketFd.load();
     if (fd < 0) {
@@ -391,7 +423,7 @@ void trySetRealtimeScheduling(const std::string& threadName, int priority) {
     } else {
         if (rc == EPERM) {
             if (!warnedOnce.exchange(true)) {
-                logEvent(WARNING, "Insufficient privileges to apply SCHED_FIFO priority to " + threadName + ". Run as root or grant CAP_SYS_NICE.");
+                logEvent(WARNING, "Insufficient privileges to apply SCHED_FIFO priority to " + threadName + "."); //Run as root or grant CAP_SYS_NICE.
             }
         } else {
             logEvent(WARNING, "Failed to apply SCHED_FIFO priority to " + threadName + ": " + std::strerror(rc));
@@ -1001,6 +1033,7 @@ int main(int argc, char* argv[]) {
             logEvent(ERROR, "setsockopt");
             throw std::system_error(errno, std::generic_category(), "setsockopt");
         }
+        configureTcpKeepalive(sockfd);
 
         if (bind(sockfd, p->ai_addr, p->ai_addrlen) == -1) {
             close(sockfd);
@@ -1082,6 +1115,7 @@ int main(int argc, char* argv[]) {
             std::perror("accept");
             continue;
         }
+        configureTcpKeepalive(new_fd);
 
         inet_ntop(their_addr.ss_family, get_in_addr((struct sockaddr*)&their_addr), s, sizeof s);
         std::cout << "Connection from: " << s << std::endl;
