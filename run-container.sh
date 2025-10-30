@@ -5,8 +5,8 @@
 
 docker run -it --rm \
     --name dbcserver \
-    --network=host \ 
+    --network=host \
     --cap-add=NET_RAW \
-    -v "$(pwd)/output/server.conf:/app/server.conf:ro" \
+    -v "$(pwd)/example_server.conf:/app/server.conf:ro" \
     -v "$(pwd)/logs:/app/logs" \
-    dbcserver:latest
+    guyferrari/dbcserver:latest

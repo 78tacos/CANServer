@@ -1,0 +1,51 @@
+# Git files
+.git
+.gitignore
+.github
+
+# Build outputs
+output/
+outputarm/
+*.o
+*.a
+*.so
+
+# Logs
+logs/
+*.log
+
+# Test files
+tests/
+test_*
+
+# Documentation
+README
+*.md
+LICENSE
+
+# Docker files
+.devcontainer/
+docker-compose.yml
+Dockerfile
+.dockerignore
+
+# Scripts
+run-container.sh
+*.sh
+
+# IDE and editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Credentials and keys
+*.pem
+*.key
+*.crt
+
+# Temporary files
+*.tmp
+*.bak
+.DS_Store

@@ -41,7 +41,7 @@ WORKDIR /app
 COPY --from=builder /build/output/server /app/server
 
 # Copy example config (optional, can be overridden with volume mount)
-COPY output/example_server.conf /app/server.conf
+COPY ./example_server.conf /app/server.conf
 
 RUN chown -R $USERNAME:$USERNAME /app && chmod +x /app/server
 
