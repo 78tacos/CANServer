@@ -9,7 +9,8 @@
  * --------
  * This server accepts simple text commands over TCP and schedules CAN frame transmissions via
  * an in-process thread pool. Each client connection is handled by its own client-handler thread
- * which may schedule recurring or single-shot tasks that fork/exec `cansend` to perform the send.
+ * which may schedule recurring or single-shot tasks. A dedicated CAN sender thread handles all
+ * actual CAN transmissions using either raw CAN sockets or fork/exec `cansend` as fallback.
  *
  * Scheduler changes
  * -----------------
@@ -18,6 +19,15 @@
  * to schedule delayed execution — this replaces the earlier deadline-in-worker approach while
  * preserving priority and FIFO tie-break semantics.
  *
+ * CAN Sender Thread
+ * -----------------
+ * A dedicated real-time thread handles all CAN frame transmissions. Tasks submit send requests to
+ * a queue, and the CAN sender thread processes them sequentially. This design:
+ *  - Isolates CAN I/O from task scheduling
+ *  - Enables real-time scheduling (SCHED_FIFO) for consistent latency
+ *  - Supports both raw CAN sockets and cansend fallback via USE_RAW_CAN config
+ *  - Provides synchronous result reporting back to tasks
+ *
  * Configuration
  * -------------
  * The server reads a simple key=value config file. Supported keys used by the code:
@@ -25,6 +35,7 @@
  *  - LOG_LEVEL=<DEBUG|INFO|WARNING|ERROR|NOLOG>
  *  - WORKER_THREADS=<n> if the workload is very high, this can be adjusted
  *  - LOG_PATH=<absolute_path>   # optional: overrides the log file path but SERVER_LOG_PATH env var overrides all
+ *  - USE_RAW_CAN=<true|false>   # optional: use raw CAN sockets (true) or always use cansend (false), default: true
  *
  * Logging
  * -------
@@ -135,6 +146,7 @@
 #include <unordered_map>
 #include <memory>
 #include <cctype>
+#include <future>
 #include <pthread.h>
 #include <sched.h>
 #include <time.h>
@@ -155,6 +167,9 @@ const int WARNING = 20;
 const int ERROR = 30;
 const int DEBUG = 5;
 const int NOLOG = 100;
+
+// Flag to control whether to use raw CAN sockets or always use cansend
+bool use_raw_can = false; // Default to true (use raw sockets with cansend fallback)
 
 // Helper function to trim whitespace and invisible characters from string
 std::string trim(const std::string& str) {
@@ -254,6 +269,33 @@ void closeAllCanSockets() {
     }
     globalCanSockets.clear();
 }
+
+// Forward declarations
+bool runCansendFallback(const std::string& command,
+                        const std::string& taskId,
+                        const std::shared_ptr<bool>& activeFlag);
+bool sendCanFrameRaw(const std::string& interface, const std::string& frameStr, std::string& error);
+
+// CAN Send Request structure for dedicated sender thread
+struct CanSendRequest {
+    std::string interface;
+    std::string frameStr;
+    std::string command;  // Full cansend command for fallback
+    std::string taskId;
+    std::shared_ptr<bool> activeFlag;
+    std::promise<bool> result;
+    
+    CanSendRequest(const std::string& iface, const std::string& frame, 
+                   const std::string& cmd, const std::string& tid,
+                   std::shared_ptr<bool> active)
+        : interface(iface), frameStr(frame), command(cmd), taskId(tid), activeFlag(active) {}
+};
+
+// Global queue and synchronization for CAN sender thread
+std::queue<std::unique_ptr<CanSendRequest>> canSendQueue;
+std::mutex canSendQueueMutex;
+std::condition_variable canSendQueueCV;
+std::atomic<bool> canSenderThreadRunning{true};
 
 // Configurable log path (can be set from config file or SERVER_LOG_PATH env var)
 static std::string g_logPath;
@@ -573,6 +615,89 @@ bool sendCanFrameRaw(const std::string& interface, const std::string& frameStr, 
     }
 
     return true;
+}
+
+// Submit a CAN send request to the dedicated sender thread
+bool sendCanViaDedicatedThread(const std::string& canBus,
+                               const std::string& canFrame,
+                               const std::string& command,
+                               const std::string& taskId,
+                               const std::shared_ptr<bool>& activeFlag) {
+    auto request = std::make_unique<CanSendRequest>(canBus, canFrame, command, taskId, activeFlag);
+    auto future = request->result.get_future();
+    
+    {
+        std::lock_guard<std::mutex> lock(canSendQueueMutex);
+        canSendQueue.push(std::move(request));
+    }
+    canSendQueueCV.notify_one();
+    
+    // Wait for result
+    return future.get();
+}
+
+// Dedicated CAN sender thread function
+void canSenderThreadFunc() {
+    logEvent(INFO, "CAN sender thread started");
+    
+    // Set real-time scheduling for this thread if possible
+    struct sched_param param;
+    param.sched_priority = 50; // Medium-high priority
+    if (pthread_setschedparam(pthread_self(), SCHED_FIFO, &param) == 0) {
+        logEvent(DEBUG, "CAN sender thread set to SCHED_FIFO priority 50");
+    } else {
+        logEvent(WARNING, "Failed to set real-time scheduling for CAN sender thread: " + std::string(std::strerror(errno)));
+    }
+    
+    while (canSenderThreadRunning) {
+        std::unique_ptr<CanSendRequest> request;
+        
+        {
+            std::unique_lock<std::mutex> lock(canSendQueueMutex);
+            canSendQueueCV.wait(lock, [] {
+                return !canSendQueue.empty() || !canSenderThreadRunning;
+            });
+            
+            if (!canSenderThreadRunning && canSendQueue.empty()) {
+                break;
+            }
+            
+            if (!canSendQueue.empty()) {
+                request = std::move(canSendQueue.front());
+                canSendQueue.pop();
+            }
+        }
+        
+        if (!request) {
+            continue;
+        }
+        
+        bool success = false;
+        
+        // Check global config flag to determine send method
+        if (use_raw_can) {
+            // Try raw socket first
+            std::string error;
+            if (sendCanFrameRaw(request->interface, request->frameStr, error)) {
+                logEvent(DEBUG, "CAN sender thread: sent frame via raw socket on " + request->interface + ": " + request->frameStr);
+                success = true;
+            } else {
+                logEvent(WARNING, "CAN sender thread: raw send failed on " + request->interface + " for frame " + request->frameStr + ": " + error + ". Falling back to cansend.");
+            }
+        } else {
+            logEvent(DEBUG, "CAN sender thread: USE_RAW_CAN is false, using cansend for " + request->interface + ": " + request->frameStr);
+        }
+        
+        // Fall back to cansend if raw socket failed or disabled
+        if (!success) {
+            success = runCansendFallback(request->command, request->taskId, request->activeFlag);
+        }
+        
+        // Set the result
+        request->result.set_value(success);
+    }
+    
+    logEvent(INFO, "CAN sender thread stopped");
 }
 
 bool runCansendFallback(const std::string& command,
@@ -997,6 +1122,18 @@ int main(int argc, char* argv[]) {
                 logEvent(WARNING, "Error parsing WORKER_THREADS value '" + workerThreadsStr + "': " + e.what() + ". Using default.");
             }
         }
+        else if (lineView.substr(0, 12) == "USE_RAW_CAN=") {
+            std::string useRawCanStr = trim(std::string(lineView.substr(12)));
+            if (useRawCanStr == "true" || useRawCanStr == "TRUE" || useRawCanStr == "1") {
+                use_raw_can = true;
+                logEvent(DEBUG, "USE_RAW_CAN set to true (will use raw CAN sockets with fallback to cansend)");
+            } else if (useRawCanStr == "false" || useRawCanStr == "FALSE" || useRawCanStr == "0") {
+                use_raw_can = false;
+                logEvent(DEBUG, "USE_RAW_CAN set to false (will always use cansend)");
+            } else {
+                logEvent(WARNING, "Invalid USE_RAW_CAN value '" + useRawCanStr + "', using default (true)");
+            }
+        }
     }
     configFile.close();
 
@@ -1093,6 +1230,12 @@ int main(int argc, char* argv[]) {
     };
 
     std::unique_ptr<ThreadPool> pool = make_pool();
+
+    // Start dedicated CAN sender thread
+    canSenderThreadRunning = true;
+    std::thread canSenderThread(canSenderThreadFunc);
+    registry.add(canSenderThread.get_id(), "CAN_SENDER");
+    logEvent(INFO, "Started dedicated CAN sender thread");
 
     // Discover available CAN interfaces
     availableCanInterfaces = discoverCanInterfaces();
@@ -1335,14 +1478,8 @@ int main(int argc, char* argv[]) {
                                          const std::string& command,
                                          const std::string& taskId,
                                          const std::shared_ptr<bool>& activeFlag) -> bool {
-                std::string error;
-                if (sendCanFrameRaw(canBus, canFrame, error)) {
-                    logEvent(DEBUG, "Sent CAN frame via raw socket on " + canBus + ": " + canFrame);
-                    return true;
-                }
-
-                logEvent(WARNING, "Raw CAN send failed on " + canBus + " for frame " + canFrame + ": " + error + ". Falling back to cansend.");
-                return runCansendFallback(command, taskId, activeFlag);
+                // Submit to dedicated CAN sender thread
+                return sendCanViaDedicatedThread(canBus, canFrame, command, taskId, activeFlag);
             };
 
             auto setupRecurringCansend = [&](const std::string& canBus,
@@ -1666,6 +1803,15 @@ int main(int argc, char* argv[]) {
     // Close the listening socket to stop accepting new connections
     close(sockfd);
     listeningSocketFd.store(-1);
+
+    // Stop the CAN sender thread
+    logEvent(INFO, "Stopping CAN sender thread");
+    canSenderThreadRunning = false;
+    canSendQueueCV.notify_all();
+    if (canSenderThread.joinable()) {
+        canSenderThread.join();
+    }
+    logEvent(INFO, "CAN sender thread stopped");
 
     // Best-effort: terminate any remaining child processes we tracked
     {

@@ -50,6 +50,7 @@ PORT=50123
 LOG_LEVEL=DEBUG        # DEBUG|INFO|WARNING|ERROR|NOLOG
 WORKER_THREADS=2       # optional, defaults to min(cores, value) with floor of 1
 LOG_PATH=/var/log/canserver/server.log  # optional: overrides default log path (./server.log). SERVER_LOG_PATH env overrides all
+USE_RAW_CAN=true       # optional: true = use raw CAN sockets (faster, falls back to cansend on error), false = always use cansend. Default: true
 ```
 
 ### Client (`output/client.conf`)

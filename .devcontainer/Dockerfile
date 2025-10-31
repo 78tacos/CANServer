@@ -5,8 +5,15 @@ ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update && apt-get install -y \
     build-essential \
     make \
-    g++ \
+    g++-13 \
+    gcc-13 \
+    g++-13-aarch64-linux-gnu \
+    gcc-13-aarch64-linux-gnu \
     && rm -rf /var/lib/apt/lists/*
+
+# Set g++-13 as default
+RUN update-alternatives --install /usr/bin/g++ g++ /usr/bin/g++-13 100 && \
+    update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-13 100
 
 WORKDIR /build
 
