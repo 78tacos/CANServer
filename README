@@ -51,6 +51,24 @@ LOG_LEVEL=DEBUG        # DEBUG|INFO|WARNING|ERROR|NOLOG
 WORKER_THREADS=2       # optional, defaults to min(cores, value) with floor of 1
 LOG_PATH=/var/log/canserver/server.log  # optional: overrides default log path (./server.log). SERVER_LOG_PATH env overrides all
 USE_RAW_CAN=true       # optional: true = use raw CAN sockets (faster, falls back to cansend on error), false = always use cansend. Default: true
+USE_PERSISTENT_SHELL=false  # optional: true = use persistent shell for cansend (fastest cansend method), false = vfork/exec per send. Default: false
+```
+
+**Performance comparison:**
+- `USE_RAW_CAN=true`: (fastest (~850+ msgs per second), super fast, requires raw socket support)
+- `USE_PERSISTENT_SHELL=true`: (~425 msgs per second, works everywhere with cansend. Bad debugging, and slower)
+- Default (vfork/exec): (~550 msgs per second, very good speed with great debugging)
+- Leave both false for best experience unless you need speed.
+
+**Send method priority:**
+1. Raw CAN sockets (tried first if `USE_RAW_CAN=true`)
+2. Persistent shell (if `USE_PERSISTENT_SHELL=true` and raw sockets failed/disabled)
+3. vfork/exec (final fallback)
+
+**Recommended configurations:**
+- For maximum speed on systems with raw socket support: `USE_RAW_CAN=true` (default)
+- For systems without raw sockets but needing high speed: `USE_RAW_CAN=false` + `USE_PERSISTENT_SHELL=true`
+- For maximum compatibility: both false (uses vfork/exec)
 ```
 
 ### Client (`output/client.conf`)

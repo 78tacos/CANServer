@@ -36,6 +36,12 @@
  *  - WORKER_THREADS=<n> if the workload is very high, this can be adjusted
  *  - LOG_PATH=<absolute_path>   # optional: overrides the log file path but SERVER_LOG_PATH env var overrides all
  *  - USE_RAW_CAN=<true|false>   # optional: use raw CAN sockets (true) or always use cansend (false), default: true
+ *  - USE_PERSISTENT_SHELL=<true|false>  # optional: use persistent shell for cansend (true) or vfork/exec per send (false), default: false
+ *
+ * Send method priority (when USE_RAW_CAN=true, which is default):
+ *  1. Raw CAN sockets (tried first if USE_RAW_CAN=true)
+ *  2. Persistent shell (if USE_PERSISTENT_SHELL=true and raw sockets fail/disabled)
+ *  3. vfork/exec per send (final fallback)
  *
  * Logging
  * -------
@@ -154,6 +160,7 @@
 #include <linux/can/raw.h>
 #include <sys/ioctl.h>
 #include <net/if.h>
+#include <fcntl.h>
 
 #define BACKLOG 10
 #define MAXDATASIZE 10000
@@ -169,7 +176,10 @@ const int DEBUG = 5;
 const int NOLOG = 100;
 
 // Flag to control whether to use raw CAN sockets or always use cansend
-bool use_raw_can = false; // Default to true (use raw sockets with cansend fallback)
+bool use_raw_can = false;
+
+// Flag to control whether to use persistent shell for cansend
+bool use_persistent_shell = false; // Default to false (use vfork/exec per send)
 
 // Helper function to trim whitespace and invisible characters from string
 std::string trim(const std::string& str) {
@@ -269,6 +279,10 @@ void closeAllCanSockets() {
     }
     globalCanSockets.clear();
 }
+
+// Forward declaration of PersistentShell (defined after logEvent)
+struct PersistentShell;
+extern PersistentShell globalPersistentShell;
 
 // Forward declarations
 bool runCansendFallback(const std::string& command,
@@ -472,6 +486,156 @@ void trySetRealtimeScheduling(const std::string& threadName, int priority) {
         }
     }
 }
+
+// Persistent shell for cansend
+struct PersistentShell {
+    pid_t pid = -1;
+    int stdin_fd = -1;
+    int stdout_fd = -1;
+    int stderr_fd = -1;
+    std::mutex mutex;
+    bool alive = false;
+    
+    bool start() {
+        std::lock_guard<std::mutex> lock(mutex);
+        if (alive) return true;
+        
+        int stdin_pipe[2], stdout_pipe[2], stderr_pipe[2];
+        if (pipe(stdin_pipe) == -1 || pipe(stdout_pipe) == -1 || pipe(stderr_pipe) == -1) {
+            logEvent(ERROR, "Failed to create pipes for persistent shell: " + std::string(std::strerror(errno)));
+            return false;
+        }
+        
+        pid = fork();
+        if (pid == -1) {
+            logEvent(ERROR, "Failed to fork persistent shell: " + std::string(std::strerror(errno)));
+            close(stdin_pipe[0]); close(stdin_pipe[1]);
+            close(stdout_pipe[0]); close(stdout_pipe[1]);
+            close(stderr_pipe[0]); close(stderr_pipe[1]);
+            return false;
+        }
+        
+        if (pid == 0) {
+            // Child process: shell
+            close(stdin_pipe[1]);
+            close(stdout_pipe[0]);
+            close(stderr_pipe[0]);
+            
+            dup2(stdin_pipe[0], STDIN_FILENO);
+            dup2(stdout_pipe[1], STDOUT_FILENO);
+            dup2(stderr_pipe[1], STDERR_FILENO);
+            
+            close(stdin_pipe[0]);
+            close(stdout_pipe[1]);
+            close(stderr_pipe[1]);
+            
+            execl("/bin/sh", "sh", nullptr);
+            _exit(1);
+        }
+        
+        // Parent process
+        close(stdin_pipe[0]);
+        close(stdout_pipe[1]);
+        close(stderr_pipe[1]);
+        
+        stdin_fd = stdin_pipe[1];
+        stdout_fd = stdout_pipe[0];
+        stderr_fd = stderr_pipe[0];
+        
+        // Set non-blocking for stdout/stderr to avoid deadlocks
+        int flags = fcntl(stdout_fd, F_GETFL, 0);
+        fcntl(stdout_fd, F_SETFL, flags | O_NONBLOCK);
+        flags = fcntl(stderr_fd, F_GETFL, 0);
+        fcntl(stderr_fd, F_SETFL, flags | O_NONBLOCK);
+        
+        alive = true;
+        logEvent(INFO, "Started persistent shell with PID " + std::to_string(pid));
+        return true;
+    }
+    
+    bool sendCommand(const std::string& command) {
+        std::lock_guard<std::mutex> lock(mutex);
+        if (!alive || stdin_fd < 0) {
+            return false;
+        }
+        
+        std::string cmd = command + "\n";
+        ssize_t written = write(stdin_fd, cmd.c_str(), cmd.size());
+        if (written != static_cast<ssize_t>(cmd.size())) {
+            logEvent(ERROR, "Failed to write to persistent shell: " + std::string(std::strerror(errno)));
+            alive = false;
+            return false;
+        }
+        
+        // Add a marker command to know when this command is done
+        std::string marker = "echo __DONE__\n";
+        written = write(stdin_fd, marker.c_str(), marker.size());
+        if (written != static_cast<ssize_t>(marker.size())) {
+            logEvent(ERROR, "Failed to write marker to persistent shell");
+            alive = false;
+            return false;
+        }
+        
+        // Read until we see the marker
+        char buffer[4096];
+        std::string output;
+        auto start = std::chrono::steady_clock::now();
+        while (std::chrono::steady_clock::now() - start < std::chrono::milliseconds(100)) {
+            ssize_t n = read(stdout_fd, buffer, sizeof(buffer) - 1);
+            if (n > 0) {
+                buffer[n] = '\0';
+                output += buffer;
+                if (output.find("__DONE__") != std::string::npos) {
+                    return true;
+                }
+            } else if (n == -1 && errno != EAGAIN && errno != EWOULDBLOCK) {
+                logEvent(ERROR, "Error reading from persistent shell: " + std::string(std::strerror(errno)));
+                alive = false;
+                return false;
+            }
+            std::this_thread::sleep_for(std::chrono::microseconds(100));
+        }
+        
+        // Timeout - command might have failed
+        logEvent(WARNING, "Timeout waiting for persistent shell response");
+        return false;
+    }
+    
+    void stop() {
+        std::lock_guard<std::mutex> lock(mutex);
+        if (!alive) return;
+        
+        if (stdin_fd >= 0) {
+            write(stdin_fd, "exit\n", 5);
+            close(stdin_fd);
+            stdin_fd = -1;
+        }
+        if (stdout_fd >= 0) {
+            close(stdout_fd);
+            stdout_fd = -1;
+        }
+        if (stderr_fd >= 0) {
+            close(stderr_fd);
+            stderr_fd = -1;
+        }
+        
+        if (pid > 0) {
+            int status;
+            kill(pid, SIGTERM);
+            waitpid(pid, &status, WNOHANG);
+            logEvent(INFO, "Stopped persistent shell with PID " + std::to_string(pid));
+            pid = -1;
+        }
+        
+        alive = false;
+    }
+    
+    ~PersistentShell() {
+        stop();
+    }
+};
+
+PersistentShell globalPersistentShell;
 
 bool parseCanFrame(const std::string& frameStr, struct can_frame& frame, std::string& error) {
     auto hashPos = frameStr.find('#');
@@ -703,9 +867,44 @@ void canSenderThreadFunc() {
 bool runCansendFallback(const std::string& command,
                         const std::string& taskId,
                         const std::shared_ptr<bool>& activeFlag) {
-    pid_t pid = fork();
+    // If persistent shell is enabled, try it first
+    if (use_persistent_shell) {
+        if (!globalPersistentShell.alive && !globalPersistentShell.start()) {
+            logEvent(WARNING, "Failed to start persistent shell, falling back to vfork");
+            // Fall through to vfork method below
+        } else {
+            logEvent(DEBUG, "Using persistent shell for: " + command);
+            bool success = globalPersistentShell.sendCommand(command);
+            if (!success) {
+                *activeFlag = false;
+                std::string errorMsg = "Persistent shell command failed";
+                logEvent(ERROR, "Task " + taskId + " stopped: " + errorMsg);
+                std::lock_guard<std::mutex> lock(globalErrorMutex);
+                globalTaskErrors[taskId] = errorMsg;
+            } else {
+                logEvent(DEBUG, "Persistent shell send succeeded");
+            }
+            return success;
+        }
+    }
+    
+    logEvent(DEBUG, "Using vfork/exec for: " + command);
+    
+    // Fallback: use vfork/exec per send
+    // Parse command to extract cansend arguments
+    // Expected format: "cansend <interface> <can_id>#<data>"
+    std::istringstream iss(command);
+    std::string prog, interface, frame;
+    iss >> prog >> interface >> frame;
+    
+    pid_t pid = vfork();  // vfork is much faster than fork for exec
     if (pid == 0) {
         prctl(PR_SET_PDEATHSIG, SIGTERM);
+        // Direct exec without shell - much faster
+        if (!interface.empty() && !frame.empty()) {
+            execl("/usr/bin/cansend", "cansend", interface.c_str(), frame.c_str(), nullptr);
+        }
+        // Fallback to shell if parsing failed
         execl("/bin/sh", "sh", "-c", command.c_str(), nullptr);
         _exit(1);
     } else if (pid > 0) {
@@ -1132,6 +1331,18 @@ int main(int argc, char* argv[]) {
                 logEvent(DEBUG, "USE_RAW_CAN set to false (will always use cansend)");
             } else {
                 logEvent(WARNING, "Invalid USE_RAW_CAN value '" + useRawCanStr + "', using default (true)");
+            }
+        }
+        else if (lineView.substr(0, 21) == "USE_PERSISTENT_SHELL=") {
+            std::string usePersistentShellStr = trim(std::string(lineView.substr(21)));
+            if (usePersistentShellStr == "true" || usePersistentShellStr == "TRUE" || usePersistentShellStr == "1") {
+                use_persistent_shell = true;
+                logEvent(DEBUG, "USE_PERSISTENT_SHELL set to true (will use persistent shell for cansend)");
+            } else if (usePersistentShellStr == "false" || usePersistentShellStr == "FALSE" || usePersistentShellStr == "0") {
+                use_persistent_shell = false;
+                logEvent(DEBUG, "USE_PERSISTENT_SHELL set to false (will use vfork/exec per send)");
+            } else {
+                logEvent(WARNING, "Invalid USE_PERSISTENT_SHELL value '" + usePersistentShellStr + "', using default (false)");
             }
         }
     }
@@ -1812,6 +2023,12 @@ int main(int argc, char* argv[]) {
         canSenderThread.join();
     }
     logEvent(INFO, "CAN sender thread stopped");
+
+    // Stop persistent shell if running
+    if (use_persistent_shell) {
+        logEvent(INFO, "Stopping persistent shell");
+        globalPersistentShell.stop();
+    }
 
     // Best-effort: terminate any remaining child processes we tracked
     {
