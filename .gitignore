@@ -8,6 +8,9 @@ output/
 .ignore/
 outputarm/
 
+# AI slop
+*.md
+
 # Object files
 *.o
 *.obj

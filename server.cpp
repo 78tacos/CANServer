@@ -98,7 +98,14 @@
  *      Client-requested graceful shutdown of the server.
  * 
  *  - RESTART
- *      Request the server to perform a graceful restart (execv of the same binary).
+ *      Restart the server in-place using execv() after graceful cleanup.
+ * 
+ *  - DISCONNECT
+ *      Disconnect from the server.
+ * 
+ *  - HELP
+ *      Display all available commands and their usage.
+ *
  *
  * Protocol notes:
  *  - Server replies to each command with a short text response (OK / ERROR / Unknown command).
@@ -1514,6 +1521,37 @@ int main(int argc, char* argv[]) {
                 niceDisconnect = true;
             };
 
+            commandMap["HELP"] = [&](const std::string&) {
+                logEvent(INFO, "Received HELP command from " + std::string(s));
+                std::string helpText = 
+                    "=== CAN Server Commands ===\n\n"
+                    "CAN Message Commands:\n"
+                    "  CANSEND#<id>#<payload>#<interval_ms>#<interface>[#priority]\n"
+                    "    Schedule recurring CAN transmit. Examples:\n"
+                    "      CANSEND#123#DEADBEEF#1000#vcan0\n"
+                    "      CANSEND#0x123#deadbeef#250ms#vcan0#7\n"
+                    "    Notes: ID may be hex (0x prefix); time may include 'ms' suffix;\n"
+                    "           priority is optional (0-9, default 5)\n\n"
+                    "  SEND_TASK#<id>#<payload>#<delay_ms>#<interface>[#priority]\n"
+                    "    Schedule single-shot send after delay_ms milliseconds\n\n"
+                    "Task Management:\n"
+                    "  LIST_TASKS              - List all tasks with status\n"
+                    "  PAUSE <task_id>         - Pause a specific task\n"
+                    "  RESUME <task_id>        - Resume a paused task\n"
+                    "  KILL_TASK <task_id>     - Stop and remove a specific task\n"
+                    "  KILL_ALL_TASKS          - Stop and remove all tasks\n\n"
+                    "System Information:\n"
+                    "  LIST_CAN_INTERFACES     - Show available CAN/vCAN interfaces\n"
+                    "  LIST_THREADS            - Show server thread registry\n"
+                    "  SET_LOG_LEVEL <level>   - Change log level (DEBUG|INFO|WARNING|ERROR|NOLOG)\n\n"
+                    "Server Control:\n"
+                    "  SHUTDOWN                - Gracefully shutdown the server\n"
+                    "  RESTART                 - Restart the server\n"
+                    "  DISCONNECT              - Disconnect from server\n"
+                    "  HELP                    - Show this help message\n\n";
+                send(new_fd, helpText.c_str(), helpText.size(), 0);
+            };
+
             commandMap["notice me senpai"] = [&](const std::string&) {
                 logEvent(INFO, "Received 'notice me senpai' from " + std::string(s));
                 const char* resp = "Senpai noticed you! (^_^) Here's a cookie: *crunch*\n";
@@ -1572,6 +1610,9 @@ int main(int argc, char* argv[]) {
                 } else if (levelStr == "ERROR") {
                     log_level = ERROR;
                     log_level_str = "ERROR";
+                } else if (levelStr == "NOLOG") {
+                    log_level = NOLOG;
+                    log_level_str = "NOLOG";
                 } else {
                     logEvent(ERROR, "Invalid log level in SET_LOG_LEVEL command from " + std::string(s));
                     send(new_fd, "Invalid log level\n", 18, 0);
