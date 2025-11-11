@@ -43,6 +43,13 @@
  *  2. Persistent shell (if USE_PERSISTENT_SHELL=true and raw sockets fail/disabled)
  *  3. vfork/exec per send (final fallback)
  *
+ * Process management
+ * ------------------
+ *  - All child processes (persistent shell and cansend) use prctl(PR_SET_PDEATHSIG, SIGTERM)
+ *    to ensure they terminate if the server dies unexpectedly, preventing orphaned processes.
+ *  - The vfork/exec cansend path includes a 5-second timeout. If cansend hangs, the server
+ *    logs an error, kills the hung process (SIGKILL), and marks the task as failed.
+ *
  * Logging
  * -------
  * Log path selection order (highest priority first):
@@ -524,6 +531,9 @@ struct PersistentShell {
         
         if (pid == 0) {
             // Child process: shell
+            // Ensure shell terminates if parent (server) dies
+            prctl(PR_SET_PDEATHSIG, SIGTERM);
+            
             close(stdin_pipe[1]);
             close(stdout_pipe[0]);
             close(stderr_pipe[0]);
@@ -921,10 +931,50 @@ bool runCansendFallback(const std::string& command,
         }
 
         int status;
-        pid_t result = waitpid(pid, &status, 0);
         bool success = true;
         std::string errorMsg;
-
+        pid_t result = 0;
+        
+        // Use sigtimedwait for zero-overhead timeout with blocking wait
+        // Set up signal mask to block SIGCHLD temporarily
+        sigset_t mask, oldmask;
+        sigemptyset(&mask);
+        sigaddset(&mask, SIGCHLD);
+        
+        // Block SIGCHLD and save old mask
+        pthread_sigmask(SIG_BLOCK, &mask, &oldmask);
+        
+        // First try non-blocking check in case child already exited
+        result = waitpid(pid, &status, WNOHANG);
+        
+        if (result == 0) {
+            // Child still running, wait with timeout
+            struct timespec timeout_spec;
+            timeout_spec.tv_sec = 5;
+            timeout_spec.tv_nsec = 0;
+            
+            // Wait for SIGCHLD or timeout
+            int sig = sigtimedwait(&mask, nullptr, &timeout_spec);
+            
+            if (sig == SIGCHLD || sig == -1) {
+                // Either got SIGCHLD or timeout, try to reap child
+                result = waitpid(pid, &status, WNOHANG);
+                
+                if (result == 0) {
+                    // Timeout - child is still running after 5 seconds
+                    success = false;
+                    errorMsg = "cansend timed out after 5 seconds";
+                    logEvent(ERROR, "Task " + taskId + ": " + errorMsg + ", killing PID " + std::to_string(pid));
+                    kill(pid, SIGKILL);
+                    waitpid(pid, &status, 0); // Clean up zombie
+                    result = -2; // Mark as timeout
+                }
+            }
+        }
+        
+        // Restore original signal mask
+        pthread_sigmask(SIG_SETMASK, &oldmask, nullptr);
+        
         if (result > 0) {
             if (WIFEXITED(status) && WEXITSTATUS(status) != 0) {
                 success = false;
@@ -933,7 +983,7 @@ bool runCansendFallback(const std::string& command,
                 success = false;
                 errorMsg = "cansend terminated by signal " + std::to_string(WTERMSIG(status));
             }
-        } else {
+        } else if (result < 0 && result != -2) {
             success = false;
             errorMsg = "waitpid failed: " + std::string(std::strerror(errno));
         }
