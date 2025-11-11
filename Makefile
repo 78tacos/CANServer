@@ -1,4 +1,12 @@
-CXX ?= g++
+# Auto-detect best available C++ compiler (prefer g++-13)
+ifeq ($(origin CXX), default)
+CXX := $(shell if command -v g++-13 >/dev/null 2>&1; then \
+		echo g++-13; \
+	else \
+		echo g++; \
+	fi)
+endif
+
 # Auto-detect preferred ARM cross-compiler, prefer g++-13-aarch64-linux-gnu then aarch64-linux-gnu-g++,
 # fall back to host g++ if neither is available. Allow overriding from environment: `make CXX_ARM=...`.
 CXX_ARM ?= $(shell if command -v g++-13-aarch64-linux-gnu >/dev/null 2>&1; then \
@@ -10,7 +18,14 @@ CXX_ARM ?= $(shell if command -v g++-13-aarch64-linux-gnu >/dev/null 2>&1; then 
 	fi)
 
 # Also detect matching C compiler for ARM builds (gcc-13-aarch64-linux-gnu or gcc-aarch64)
-CC ?= gcc
+ifeq ($(origin CC), default)
+CC := $(shell if command -v gcc-13 >/dev/null 2>&1; then \
+		echo gcc-13; \
+	else \
+		echo gcc; \
+	fi)
+endif
+
 CC_ARM ?= $(shell if command -v gcc-13-aarch64-linux-gnu >/dev/null 2>&1; then \
 		echo gcc-13-aarch64-linux-gnu; \
 	elif command -v aarch64-linux-gnu-gcc >/dev/null 2>&1; then \

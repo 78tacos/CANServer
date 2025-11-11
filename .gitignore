@@ -8,8 +8,10 @@ output/
 .ignore/
 outputarm/
 
-# AI slop
-*.md
+# Test executables
+test_integration
+test_server
+test_*
 
 # Object files
 *.o
@@ -92,8 +94,12 @@ cmake_install.cmake
 Makefile
 *.cmake
 !CMakeLists.txt
+
 # Dependency files
 *.d
+
+# Docker files (build context handled by .dockerignore)
+.dockerignore
 
 # Profiling data
 *.gcda

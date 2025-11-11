@@ -1,51 +1,110 @@
-# Git files
+# Git files and repository metadata
 .git
 .gitignore
+.gitattributes
 .github
 
-# Build outputs
+# Build outputs and artifacts
 output/
 outputarm/
 *.o
 *.a
 *.so
+*.so.*
+*.dylib
+*.dll
+*.exe
 
-# Logs
+# Logs and runtime files
 logs/
 *.log
+server.log
 
-# Test files
+# Test files and test artifacts
 tests/
 test_*
+*_test.cpp
+*.test
 
-# Documentation
-README
+# Documentation files
+README.md
 *.md
+!example*.md
 LICENSE
+CONTRIBUTING
+CHANGELOG
 
-# Docker files
+# Docker and container files
 .devcontainer/
 docker-compose.yml
+docker-compose.*.yml
 Dockerfile
+Dockerfile.*
 .dockerignore
 
-# Scripts
+# Scripts (except potentially needed runtime scripts)
 run-container.sh
-*.sh
 
 # IDE and editor files
 .vscode/
 .idea/
 *.swp
 *.swo
+*.swn
 *~
+.project
+.classpath
+.settings/
+*.sublime-*
+.atom/
 
-# Credentials and keys
+# OS-specific files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+Thumbs.db
+Desktop.ini
+
+# Credentials, keys, and sensitive data
 *.pem
 *.key
 *.crt
+*.cer
+*.p12
+*.pfx
+secrets/
+.env
+.env.*
+!.env.example
 
-# Temporary files
+# Temporary and backup files
 *.tmp
+*.temp
 *.bak
-.DS_Store
+*.backup
+*.old
+*.orig
+*.cache
+
+# Configuration files (keep examples)
+*.conf
+!example*.conf
+
+# Scenario and test data files
+*test*.txt
+*scenario*.txt
+
+# Build system artifacts
+.ninja_deps
+.ninja_log
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+
+# Core dumps and debugging
+core
+core.*
+*.core
+vgcore.*

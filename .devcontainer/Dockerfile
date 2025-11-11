@@ -9,6 +9,10 @@ RUN apt-get update && apt-get install -y \
     gcc-13 \
     g++-13-aarch64-linux-gnu \
     gcc-13-aarch64-linux-gnu \
+    can-utils \
+    iproute2 \
+    git \
+    sudo \
     && rm -rf /var/lib/apt/lists/*
 
 # Set g++-13 as default
@@ -19,8 +23,21 @@ WORKDIR /build
 
 COPY server.cpp Makefile ./
 
+# Create canuser for devcontainer (with sudo access)
+RUN groupadd --gid 1010 canuser \
+    && useradd --uid 1010 --gid 1010 -m canuser -s /bin/bash \
+    && echo canuser ALL=\(root\) NOPASSWD:ALL > /etc/sudoers.d/canuser \
+    && chmod 0440 /etc/sudoers.d/canuser
+
+# Give canuser ownership of build directory
+RUN chown -R canuser:canuser /build
+
+# Switch to canuser before building to avoid root-owned artifacts
+USER canuser
+
 # Build the server statically (not that it matters)
 RUN make server LDFLAGS="-static -pthread"
+
 
 FROM debian:trixie-slim AS runtime
 
@@ -31,16 +48,12 @@ RUN apt-get update && apt-get install -y \
     iproute2 \
     && rm -rf /var/lib/apt/lists/*
 
-# Create a non-root user
-ARG USERNAME=canuser
-ARG USER_UID=1010
-ARG USER_GID=$USER_UID
-
-RUN groupadd --gid $USER_GID $USERNAME \
-    && useradd --uid $USER_UID --gid $USER_GID -m $USERNAME
+# Create canuser with fixed UID/GID 1010
+RUN groupadd --gid 1010 canuser \
+    && useradd --uid 1010 --gid 1010 -m canuser
 
 # Create necessary directories
-RUN mkdir -p /app /app/logs && chown -R $USERNAME:$USERNAME /app
+RUN mkdir -p /app /app/logs && chown -R canuser:canuser /app
 
 WORKDIR /app
 
@@ -50,9 +63,9 @@ COPY --from=builder /build/output/server /app/server
 # Copy example config (optional, can be overridden with volume mount)
 COPY ./example_server.conf /app/server.conf
 
-RUN chown -R $USERNAME:$USERNAME /app && chmod +x /app/server
+RUN chown -R canuser:canuser /app && chmod +x /app/server
 
-USER $USERNAME
+USER canuser
 
 # Port is configured via server.conf (PORT=<port>)
 # Use --network=host when running the container for CAN access
