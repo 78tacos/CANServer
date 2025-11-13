@@ -1,11 +1,10 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2025 Joseph Ogle, Kunal Singh, and Deven Nasso
 
-#include <iostream>
+#include <gtest/gtest.h>
 #include <string>
 #include <vector>
 #include <sstream>
-#include <cassert>
 #include <algorithm>
 
 // Mock trim function (assuming it's defined elsewhere)
@@ -79,119 +78,120 @@ bool parseCansendPayload(const std::string& payload, int defaultPriority, std::s
     return true;
 }
 
-// Test functions
-void testValidCansend() {
+// Test fixture for parseCansendPayload tests
+class CansendParserTest : public ::testing::Test {
+protected:
     std::string command, canIdData, canBus, errorMsg;
     int intervalMs, priority;
+};
 
-    // Test basic valid message
-    assert(parseCansendPayload("123#deadbeef#1000#vcan0", 5, command, canIdData, canBus, intervalMs, priority, errorMsg));
-    assert(command == "cansend vcan0 123#deadbeef");
-    assert(canIdData == "123#deadbeef");
-    assert(canBus == "vcan0");
-    assert(intervalMs == 1000);
-    assert(priority == 5);
-
-    // Test with priority
-    assert(parseCansendPayload("456#abcdef#500#can0#7", 5, command, canIdData, canBus, intervalMs, priority, errorMsg));
-    assert(command == "cansend can0 456#abcdef");
-    assert(canIdData == "456#abcdef");
-    assert(canBus == "can0");
-    assert(intervalMs == 500);
-    assert(priority == 7);
-
-    // Test with hex ID (0x stripped)
-    assert(parseCansendPayload("0x123#beef#1000#vcan0", 5, command, canIdData, canBus, intervalMs, priority, errorMsg));
-    assert(command == "cansend vcan0 123#beef");
-    assert(canIdData == "123#beef");
-    assert(canBus == "vcan0");
-    assert(intervalMs == 1000);
-    assert(priority == 5);
-
-    // Test with ms suffix
-    assert(parseCansendPayload("789#cafe#2000ms#vcan1", 5, command, canIdData, canBus, intervalMs, priority, errorMsg));
-    assert(command == "cansend vcan1 789#cafe");
-    assert(canIdData == "789#cafe");
-    assert(canBus == "vcan1");
-    assert(intervalMs == 2000);
-    assert(priority == 5);
-
-    // Test with extra spaces (trimmed)
-    assert(parseCansendPayload(" 789 # beef # 2000 # vcan1 # 3 ", 5, command, canIdData, canBus, intervalMs, priority, errorMsg));
-    assert(command == "cansend vcan1 789#beef");
-    assert(canIdData == "789#beef");
-    assert(canBus == "vcan1");
-    assert(intervalMs == 2000);
-    assert(priority == 3);
-
-    std::cout << "testValidCansend passed\n";
+// Valid CANSEND parsing tests
+TEST_F(CansendParserTest, BasicValidMessage) {
+    ASSERT_TRUE(parseCansendPayload("123#deadbeef#1000#vcan0", 5, command, canIdData, canBus, intervalMs, priority, errorMsg));
+    EXPECT_EQ(command, "cansend vcan0 123#deadbeef");
+    EXPECT_EQ(canIdData, "123#deadbeef");
+    EXPECT_EQ(canBus, "vcan0");
+    EXPECT_EQ(intervalMs, 1000);
+    EXPECT_EQ(priority, 5);
 }
 
-void testInvalidCansend() {
-    std::string command, canIdData, canBus, errorMsg;
-    int intervalMs, priority;
-
-    // Test too few parts
-    assert(!parseCansendPayload("123#deadbeef#1000", 5, command, canIdData, canBus, intervalMs, priority, errorMsg));
-    assert(errorMsg.find("Invalid CANSEND syntax") != std::string::npos);
-
-    // Test invalid time
-    assert(!parseCansendPayload("123#deadbeef#abc#vcan0", 5, command, canIdData, canBus, intervalMs, priority, errorMsg));
-    assert(errorMsg.find("Invalid time value") != std::string::npos);
-
-    // Test negative time
-    assert(!parseCansendPayload("123#deadbeef#-1000#vcan0", 5, command, canIdData, canBus, intervalMs, priority, errorMsg));
-    assert(errorMsg.find("Time value must be non-negative") != std::string::npos);
-
-    // Test invalid CAN interface
-    assert(!parseCansendPayload("123#deadbeef#1000#invalidbus", 5, command, canIdData, canBus, intervalMs, priority, errorMsg));
-    assert(errorMsg.find("CAN interface 'invalidbus' is not available") != std::string::npos);
-
-    // Test invalid priority (non-digit, defaults but still succeeds)
-    assert(parseCansendPayload("123#deadbeef#1000#vcan0#a", 5, command, canIdData, canBus, intervalMs, priority, errorMsg));
-    assert(priority == 5);  // Defaults to defaultPriority
-
-    // Test priority out of range (multi-digit, defaults)
-    assert(parseCansendPayload("123#deadbeef#1000#vcan0#10", 5, command, canIdData, canBus, intervalMs, priority, errorMsg));
-    assert(priority == 5);  // Invalid, defaults
-
-    std::cout << "testInvalidCansend passed\n";
+TEST_F(CansendParserTest, MessageWithPriority) {
+    ASSERT_TRUE(parseCansendPayload("456#abcdef#500#can0#7", 5, command, canIdData, canBus, intervalMs, priority, errorMsg));
+    EXPECT_EQ(command, "cansend can0 456#abcdef");
+    EXPECT_EQ(canIdData, "456#abcdef");
+    EXPECT_EQ(canBus, "can0");
+    EXPECT_EQ(intervalMs, 500);
+    EXPECT_EQ(priority, 7);
 }
 
-// Additional test for edge cases
-void testEdgeCases() {
-    std::string command, canIdData, canBus, errorMsg;
-    int intervalMs, priority;
-
-    // Test empty payload
-    assert(!parseCansendPayload("", 5, command, canIdData, canBus, intervalMs, priority, errorMsg));
-
-    // Test only ID
-    assert(!parseCansendPayload("123", 5, command, canIdData, canBus, intervalMs, priority, errorMsg));
-
-    // Test zero time
-    assert(parseCansendPayload("123#deadbeef#0#vcan0", 5, command, canIdData, canBus, intervalMs, priority, errorMsg));
-    assert(intervalMs == 0);
-
-    // Test uppercase 0X
-    assert(parseCansendPayload("0X123#beef#1000#vcan0", 5, command, canIdData, canBus, intervalMs, priority, errorMsg));
-    assert(canIdData == "123#beef");
-
-    // Test priority 0
-    assert(parseCansendPayload("123#deadbeef#1000#vcan0#0", 5, command, canIdData, canBus, intervalMs, priority, errorMsg));
-    assert(priority == 0);
-
-    // Test priority 9
-    assert(parseCansendPayload("123#deadbeef#1000#vcan0#9", 5, command, canIdData, canBus, intervalMs, priority, errorMsg));
-    assert(priority == 9);
-
-    std::cout << "testEdgeCases passed\n";
+TEST_F(CansendParserTest, HexIdWithPrefix) {
+    ASSERT_TRUE(parseCansendPayload("0x123#beef#1000#vcan0", 5, command, canIdData, canBus, intervalMs, priority, errorMsg));
+    EXPECT_EQ(command, "cansend vcan0 123#beef");
+    EXPECT_EQ(canIdData, "123#beef");
+    EXPECT_EQ(canBus, "vcan0");
+    EXPECT_EQ(intervalMs, 1000);
+    EXPECT_EQ(priority, 5);
 }
 
-int main() {
-    testValidCansend();
-    testInvalidCansend();
-    testEdgeCases();
-    std::cout << "All tests passed!\n";
-    return 0;
+TEST_F(CansendParserTest, TimeWithMsSuffix) {
+    ASSERT_TRUE(parseCansendPayload("789#cafe#2000ms#vcan1", 5, command, canIdData, canBus, intervalMs, priority, errorMsg));
+    EXPECT_EQ(command, "cansend vcan1 789#cafe");
+    EXPECT_EQ(canIdData, "789#cafe");
+    EXPECT_EQ(canBus, "vcan1");
+    EXPECT_EQ(intervalMs, 2000);
+    EXPECT_EQ(priority, 5);
+}
+
+TEST_F(CansendParserTest, ExtraSpacesTrimmed) {
+    ASSERT_TRUE(parseCansendPayload(" 789 # beef # 2000 # vcan1 # 3 ", 5, command, canIdData, canBus, intervalMs, priority, errorMsg));
+    EXPECT_EQ(command, "cansend vcan1 789#beef");
+    EXPECT_EQ(canIdData, "789#beef");
+    EXPECT_EQ(canBus, "vcan1");
+    EXPECT_EQ(intervalMs, 2000);
+    EXPECT_EQ(priority, 3);
+}
+
+// Invalid CANSEND parsing tests
+TEST_F(CansendParserTest, TooFewParts) {
+    ASSERT_FALSE(parseCansendPayload("123#deadbeef#1000", 5, command, canIdData, canBus, intervalMs, priority, errorMsg));
+    EXPECT_NE(errorMsg.find("Invalid CANSEND syntax"), std::string::npos);
+}
+
+TEST_F(CansendParserTest, InvalidTimeValue) {
+    ASSERT_FALSE(parseCansendPayload("123#deadbeef#abc#vcan0", 5, command, canIdData, canBus, intervalMs, priority, errorMsg));
+    EXPECT_NE(errorMsg.find("Invalid time value"), std::string::npos);
+}
+
+TEST_F(CansendParserTest, NegativeTime) {
+    ASSERT_FALSE(parseCansendPayload("123#deadbeef#-1000#vcan0", 5, command, canIdData, canBus, intervalMs, priority, errorMsg));
+    EXPECT_NE(errorMsg.find("Time value must be non-negative"), std::string::npos);
+}
+
+TEST_F(CansendParserTest, InvalidCanInterface) {
+    ASSERT_FALSE(parseCansendPayload("123#deadbeef#1000#invalidbus", 5, command, canIdData, canBus, intervalMs, priority, errorMsg));
+    EXPECT_NE(errorMsg.find("CAN interface 'invalidbus' is not available"), std::string::npos);
+}
+
+TEST_F(CansendParserTest, InvalidPriorityDefaultsToDefault) {
+    ASSERT_TRUE(parseCansendPayload("123#deadbeef#1000#vcan0#a", 5, command, canIdData, canBus, intervalMs, priority, errorMsg));
+    EXPECT_EQ(priority, 5);  // Defaults to defaultPriority
+}
+
+TEST_F(CansendParserTest, PriorityOutOfRangeDefaultsToDefault) {
+    ASSERT_TRUE(parseCansendPayload("123#deadbeef#1000#vcan0#10", 5, command, canIdData, canBus, intervalMs, priority, errorMsg));
+    EXPECT_EQ(priority, 5);  // Invalid, defaults
+}
+
+// Edge case tests
+TEST_F(CansendParserTest, EmptyPayload) {
+    ASSERT_FALSE(parseCansendPayload("", 5, command, canIdData, canBus, intervalMs, priority, errorMsg));
+}
+
+TEST_F(CansendParserTest, OnlyId) {
+    ASSERT_FALSE(parseCansendPayload("123", 5, command, canIdData, canBus, intervalMs, priority, errorMsg));
+}
+
+TEST_F(CansendParserTest, ZeroTime) {
+    ASSERT_TRUE(parseCansendPayload("123#deadbeef#0#vcan0", 5, command, canIdData, canBus, intervalMs, priority, errorMsg));
+    EXPECT_EQ(intervalMs, 0);
+}
+
+TEST_F(CansendParserTest, UppercaseHexPrefix) {
+    ASSERT_TRUE(parseCansendPayload("0X123#beef#1000#vcan0", 5, command, canIdData, canBus, intervalMs, priority, errorMsg));
+    EXPECT_EQ(canIdData, "123#beef");
+}
+
+TEST_F(CansendParserTest, PriorityZero) {
+    ASSERT_TRUE(parseCansendPayload("123#deadbeef#1000#vcan0#0", 5, command, canIdData, canBus, intervalMs, priority, errorMsg));
+    EXPECT_EQ(priority, 0);
+}
+
+TEST_F(CansendParserTest, PriorityNine) {
+    ASSERT_TRUE(parseCansendPayload("123#deadbeef#1000#vcan0#9", 5, command, canIdData, canBus, intervalMs, priority, errorMsg));
+    EXPECT_EQ(priority, 9);
+}
+
+int main(int argc, char **argv) {
+    ::testing::InitGoogleTest(&argc, argv);
+    return RUN_ALL_TESTS();
 }

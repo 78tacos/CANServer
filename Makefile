@@ -38,6 +38,9 @@ CXXFLAGS = -std=c++20 -Wall -pthread
 CXXFLAGS_ARM = -std=c++20 -Wall -pthread
 CXXFLAGS_ARM_STATIC = $(CXXFLAGS_ARM) -static
 
+# Google Test flags
+GTEST_FLAGS = -lgtest -lgtest_main -pthread
+
 # x86 targets
 OUTPUT_X86 = output
 TARGET = $(OUTPUT_X86)/server
@@ -75,12 +78,12 @@ $(CLIENT_TARGET): $(CLIENT_SRC)
 
 $(TEST_TARGET): $(TEST_SRC)
 	mkdir -p $(OUTPUT_X86)
-	$(CXX) $(CXXFLAGS) -o $(TEST_TARGET) $(TEST_SRC)
+	$(CXX) $(CXXFLAGS) -o $(TEST_TARGET) $(TEST_SRC) $(GTEST_FLAGS)
 
 # build integration test (x86)
 $(INTEGRATION_TARGET): $(INTEGRATION_SRC)
 	mkdir -p $(OUTPUT_X86)
-	$(CXX) $(CXXFLAGS) -o $(INTEGRATION_TARGET) $(INTEGRATION_SRC)
+	$(CXX) $(CXXFLAGS) -o $(INTEGRATION_TARGET) $(INTEGRATION_SRC) $(GTEST_FLAGS)
 
 # ARM64 builds
 arm: $(TARGET_ARM) $(CLIENT_TARGET_ARM) $(TEST_TARGET_ARM) $(INTEGRATION_TARGET_ARM)
@@ -102,12 +105,12 @@ $(CLIENT_TARGET_ARM): $(CLIENT_SRC)
 
 $(TEST_TARGET_ARM): $(TEST_SRC)
 	mkdir -p $(OUTPUT_ARM)
-	$(CXX_ARM) $(CXXFLAGS_ARM) -o $(TEST_TARGET_ARM) $(TEST_SRC)
+	$(CXX_ARM) $(CXXFLAGS_ARM) -o $(TEST_TARGET_ARM) $(TEST_SRC) $(GTEST_FLAGS)
 
 # build integration test (ARM)
 $(INTEGRATION_TARGET_ARM): $(INTEGRATION_SRC)
 	mkdir -p $(OUTPUT_ARM)
-	$(CXX_ARM) $(CXXFLAGS_ARM) -o $(INTEGRATION_TARGET_ARM) $(INTEGRATION_SRC)
+	$(CXX_ARM) $(CXXFLAGS_ARM) -o $(INTEGRATION_TARGET_ARM) $(INTEGRATION_SRC) $(GTEST_FLAGS)
 
 # Static variants
 $(TARGET_ARM)_static: $(SRC)
@@ -120,7 +123,7 @@ $(CLIENT_TARGET_ARM)_static: $(CLIENT_SRC)
 
 $(TEST_TARGET_ARM)_static: $(TEST_SRC)
 	mkdir -p $(OUTPUT_ARM)
-	$(CXX_ARM) $(CXXFLAGS_ARM_STATIC) -o $(OUTPUT_ARM)/test_server-arm64-static $(TEST_SRC)
+	$(CXX_ARM) $(CXXFLAGS_ARM_STATIC) -o $(OUTPUT_ARM)/test_server-arm64-static $(TEST_SRC) $(GTEST_FLAGS)
 	
 # Individual targets
 server: $(TARGET)
