@@ -1,3 +1,5 @@
+![CANtrol Center](https://github.com/user-attachments/assets/de0cb1f0-52ed-4919-9044-1b092cc858a9)
+
 # CAN Bus Scheduler
 
  A multi-threaded TCP server and companion client for scheduling recurring or one-shot `cansend` transmissions on Linux CAN/vCAN interfaces.
