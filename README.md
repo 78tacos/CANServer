@@ -1,5 +1,8 @@
 ![CANtrol Center](https://raw.githubusercontent.com/78tacos/CANServer/main/.assets/CANtrol_Center.png)
 
+You will need both the frontend and backend (this page). Download the Frontend here:
+https://github.com/dnasso/DBCFileViewer
+
 # CAN Bus Scheduler
 
  A multi-threaded TCP server and companion client for scheduling recurring or one-shot `cansend` transmissions on Linux CAN/vCAN interfaces.
