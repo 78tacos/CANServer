@@ -1,119 +1,38 @@
-# VS Code DevContainer Setup
+# Dev container
 
-This DevContainer provides a complete development environment for building the CANServer project, including:
+The container has a native g++ with C++20, an ARM64 cross compiler, can-utils, iproute2, gdb, and strace. It runs with `CAP_NET_RAW`.
 
-- **Native x86_64 compilation** with g++ and C++20 support
-- **ARM64 cross-compilation** with aarch64-linux-gnu-g++
-- **CAN utilities** (can-utils, iproute2, vcan support)
-- **Debugging tools** (gdb, strace)
-- **Realtime capabilities** (CAP_NET_RAW, CAP_SYS_NICE, CAP_NET_ADMIN)
+Open this folder in VS Code and choose **Reopen in Container** (`Dev Containers: Reopen in Container`). The first build takes a while.
 
-## Getting Started
-
-1. Open this folder in VS Code
-2. When prompted, click "Reopen in Container" (or run: `Dev Containers: Reopen in Container`)
-3. Wait for the container to build (first time only)
-4. Once inside, you're ready to build!
-
-## Building
-# VS Code DevContainer — quick build & run
-
-This DevContainer provides a ready environment for developing the CANServer project (native x86_64 build, ARM64 cross-compiles, CAN utilities, and debug tools).
-
-Below are concise, copy-pasteable build/run and test instructions so you can get the project compiled and the integration test running locally.
-
-## Quick build (recommended)
-
-Build native artifacts (server, client, unit tests, integration test):
+## Build
 
 ```bash
-make all
+make all          # server, client, unit test, integration test
+make arm          # dynamic ARM64 binaries
+make arm-static   # static ARM64 binaries (needs the cross static libs)
+make arm-all
 ```
 
-Notes:
-- The Makefile auto-detects ARM cross-compilers (prefers `g++-13-aarch64-linux-gnu` then `aarch64-linux-gnu-g++`). You can override with `CXX_ARM=` if needed.
+The Makefile looks for `g++-13-aarch64-linux-gnu`, then `aarch64-linux-gnu-g++`. Override that with `CXX_ARM=` if you have the compiler somewhere else.
 
-Build ARM artifacts (cross-compile):
+Single targets: `make server`, `make client`, `make test_build`.
 
-```bash
-make arm        # dynamic ARM binaries
-make arm-static # static ARM binaries (requires cross static libs)
-make arm-all    # both
-```
-
-## Create a virtual CAN (vcan) device for local testing
+## vCAN and the integration test
 
 ```bash
 sudo modprobe vcan
 sudo ip link add dev vcan0 type vcan
 sudo ip link set up vcan0
-ip link show vcan0
 ```
 
-## Start the server and run the integration test
-
-1. Ensure the server config uses the same port the test expects (default test uses port 50123). Create or edit `output/server.conf` (example below):
-
-```properties
-PORT=50123
-LOG_LEVEL=DEBUG
-WORKER_THREADS=2
-LOG_PATH=server.log
-```
-
-2. Start the server (background):
+The integration test connects to port 50123. Point `output/server.conf` (or `example_server.conf`) at that port, start the server, then run the test:
 
 ```bash
-# start server and detach
-nohup ./output/server output/server.conf > server.stdout 2>&1 &
-```
-
-3. Run the integration test (requires server to be running on the configured port):
-
-```bash
+nohup ./output/server example_server.conf > server.stdout 2>&1 &
 make integration
-```
-
-If the integration test fails to connect, check `server.stdout` and `server.log` for errors and confirm the port in `output/server.conf`.
-
-## Run unit tests
-
-```bash
 make test
 ```
 
-## Useful commands
+If the test cannot connect, check `server.stdout` and `server.log`, and confirm the port. Cross-compiled tests can be run with `make test_arm` and `make integration_arm` under qemu-user.
 
-- Build a single target:
-
-```bash
-make server        # build native server
-make client        # build native client
-make test_build    # build native unit test
-```
-
-- Run ARM tests under qemu-user (if you cross-compile the ARM tests):
-
-```bash
-make test_arm
-make integration_arm
-```
-
-## Troubleshooting pointers
-
-- If the integration test cannot connect (assertion at connection/send):
-	- Confirm the server is running and bound to the port in `output/server.conf`.
-	- Ensure `vcan0` exists when tests send CAN frames.
-	- Check `server.log` and `server.stdout` for startup errors.
-
-- If cross-compiler is not found: either install the distribution package (e.g., `g++-13-aarch64-linux-gnu`) in the devcontainer or set `CXX_ARM=/path/to/compiler` when running `make`.
-
-## Devcontainer notes
-
-- The devcontainer includes CAN utilities (`cansend`, `candump`) and capabilities (`CAP_NET_RAW`, `CAP_NET_ADMIN`) useful for local integration testing.
-- If you run into permission issues with raw sockets, running `sudo setcap 'cap_net_raw,cap_sys_nice+ep' ./output/server` can help for manual runs.
-
----
-
-If you'd like, I can also add a small shell script `scripts/run-integration.sh` that performs the vcan setup, starts the server, waits for it to become reachable, runs the integration test, and then tears down vcan0 — would you like that? 
-```bash
+Raw sockets need `CAP_NET_RAW`. If a manual run outside the container is denied, `sudo setcap 'cap_net_raw,cap_sys_nice+ep' ./output/server` is the usual fix.
