@@ -7,7 +7,7 @@
 #include <sstream>
 #include <algorithm>
 
-// Mock trim function (assuming it's defined elsewhere)
+// Local copies so the parser tests do not link server.cpp.
 std::string trim(const std::string& str) {
     size_t first = str.find_first_not_of(' ');
     if (first == std::string::npos) return "";
@@ -15,13 +15,11 @@ std::string trim(const std::string& str) {
     return str.substr(first, (last - first + 1));
 }
 
-// Mock isValidCanInterface (simplified for testing; in real code, check against discovered interfaces)
+// Stand-in for interface discovery. Only the names these tests use are accepted.
 bool isValidCanInterface(const std::string& iface) {
-    // For tests, assume vcan0, can0, vcan1 are valid
     return iface == "vcan0" || iface == "can0" || iface == "vcan1";
 }
 
-// Updated parsing function to match parseCansendPayload logic from server.cpp
 bool parseCansendPayload(const std::string& payload, int defaultPriority, std::string& command, std::string& canIdData, std::string& canBus, int& intervalMs, int& priority, std::string& errorMsg) {
     std::vector<std::string> parts;
     std::stringstream ss(payload);
@@ -154,12 +152,12 @@ TEST_F(CansendParserTest, InvalidCanInterface) {
 
 TEST_F(CansendParserTest, InvalidPriorityDefaultsToDefault) {
     ASSERT_TRUE(parseCansendPayload("123#deadbeef#1000#vcan0#a", 5, command, canIdData, canBus, intervalMs, priority, errorMsg));
-    EXPECT_EQ(priority, 5);  // Defaults to defaultPriority
+    EXPECT_EQ(priority, 5);
 }
 
 TEST_F(CansendParserTest, PriorityOutOfRangeDefaultsToDefault) {
     ASSERT_TRUE(parseCansendPayload("123#deadbeef#1000#vcan0#10", 5, command, canIdData, canBus, intervalMs, priority, errorMsg));
-    EXPECT_EQ(priority, 5);  // Invalid, defaults
+    EXPECT_EQ(priority, 5);
 }
 
 // Edge case tests

@@ -1,39 +1,33 @@
 ![CANtrol Center](https://raw.githubusercontent.com/78tacos/CANServer/main/.assets/CANtrol_Center.png)
 
-You will need both the frontend and backend (this page). Download the Frontend here:
-https://github.com/dnasso/DBCFileViewer
+The matching UI lives in [DBCFileViewer](https://github.com/dnasso/DBCFileViewer). This repository is the scheduler that UI talks to.
 
 # CAN Bus Scheduler
 
- A multi-threaded TCP server and companion client for scheduling recurring or one-shot `cansend` transmissions on Linux CAN/vCAN interfaces.
+A multi-threaded TCP server and a small client for scheduling recurring or one-shot `cansend` frames on Linux CAN and vCAN interfaces.
 
-Notes on recent changes:
-- Scheduler refactor: the ThreadPool now uses a dedicated timer thread and an `enqueue_after` API for delayed work (replaces older deadline-in-worker logic). Priority + FIFO semantics are preserved.
-- Restart: the `RESTART` client command is implemented; it requests a graceful shutdown and re-execs the server binary so the process restarts in-place.
-- Logging: log path can be set via `LOG_PATH=` in the server config or via the `SERVER_LOG_PATH` environment variable. On Android the default log path is `/data/local/tmp/server/server.log`.
+A timer thread holds delayed work and hands it to a priority pool (higher priority first, FIFO when priorities match). `RESTART` shuts the process down and `execv`s the same binary. Logs go to `SERVER_LOG_PATH` if that is set, otherwise `LOG_PATH` from the config, otherwise `server.log` in the working directory. The server creates parent directories for `LOG_PATH` and falls back to stderr if it cannot write the file.
 
 ## Features
-- Deadline + priority thread pool for CAN message scheduling.
-- Support for recurring (`CANSEND#...`) and single-shot (`SEND_TASK#...`) jobs.
-- Per-client task management (pause/resume/kill/list).
-- Dynamic discovery of available CAN interfaces.
-- Centralized logging with configurable verbosity.
 
-## Repository Layout
-- `server.cpp` — TCP server, command dispatcher, scheduling logic, CAN discovery.
-- `client.cpp` — interactive CLI client for sending commands.
-- `test_server.cpp` — unit tests for command parsing.
-- `test_integration.cpp` — lightweight integration test harness.
-- `output/server.conf` & `output/client.conf` — example configuration files.
-- `Makefile` — build targets for server, client, and tests.
+- Priority scheduling for recurring (`CANSEND`) and one-shot (`SEND_TASK`) jobs
+- Pause, resume, kill, and list tasks per client connection
+- Discovery of CAN and vCAN interfaces
+- Logging with a runtime log level
+
+## Layout
+
+- `server.cpp` — listener, commands, scheduler, and CAN discovery
+- `client.cpp` — interactive client
+- `tests/test_server.cpp` — parser unit tests
+- `tests/test_integration.cpp` — talks to a server already listening on `127.0.0.1:50123`
+- `example_server.conf`, `example_client.conf` — config templates
+- `Makefile` — server, client, and tests
 
 ## Prerequisites
-- Linux with POSIX sockets and pthreads.
-- `g++` supporting C++20.
-- `iproute2` and CAN utils (`cansend`, `candump`).
-- Optional: virtual CAN setup for local testing.
 
-### Creating a vCAN interface
+Linux with POSIX sockets and pthreads, a C++20 `g++`, and `iproute2` plus can-utils (`cansend`, `candump`). A vCAN interface is enough for local testing:
+
 ```bash
 sudo modprobe vcan
 sudo ip link add dev vcan0 type vcan
@@ -41,42 +35,39 @@ sudo ip link set up vcan0
 ```
 
 ## Build
+
 ```bash
-make all         # build server -> output/server
-make client      # build client -> output/client
-make test        # build & run test_server.cpp
-make clean       # remove binaries
+make all      # server, client, and both test binaries under output/
+make client   # output/client
+make test     # build and run the parser tests
+make clean
 ```
 
 ## Configuration
-### Server (`output/server.conf`)
+
+Copy the examples and keep the client port equal to the server `PORT`. `example_client.conf` is checked in with `SERVER_PORT=50126`; the integration test expects `50123`.
+
+### Server
+
 ```
 PORT=50123
-LOG_LEVEL=DEBUG        # DEBUG|INFO|WARNING|ERROR|NOLOG
-WORKER_THREADS=2       # optional, defaults to min(cores, value) with floor of 1
-LOG_PATH=/var/log/canserver/server.log  # optional: overrides default log path (./server.log). SERVER_LOG_PATH env overrides all
-USE_RAW_CAN=true       # optional: true = use raw CAN sockets (faster, falls back to cansend on error), false = always use cansend. Default: true
-USE_PERSISTENT_SHELL=false  # optional: true = use persistent shell for cansend (fastest cansend method), false = vfork/exec per send. Default: false
+LOG_LEVEL=WARNING          # DEBUG|INFO|WARNING|ERROR|NOLOG
+WORKER_THREADS=2           # optional, at least 1
+LOG_PATH=server.log        # optional; SERVER_LOG_PATH overrides this
+USE_RAW_CAN=false          # true tries a raw CAN socket first
+USE_PERSISTENT_SHELL=false # true keeps one shell for cansend
 ```
 
-**Performance comparison:**
-- `USE_RAW_CAN=true`: (fastest (~850+ msgs per second), super fast, requires raw socket support)
-- `USE_PERSISTENT_SHELL=true`: (~425 msgs per second, works everywhere with cansend. Bad debugging, and slower)
-- Default (vfork/exec): (~550 msgs per second, very good speed with great debugging)
-- Leave both false for best experience unless you need speed.
+`USE_RAW_CAN` stays off unless the config turns it on. When it is on, the sender tries methods in this order:
 
-**Send method priority:**
-1. Raw CAN sockets (tried first if `USE_RAW_CAN=true`)
-2. Persistent shell (if `USE_PERSISTENT_SHELL=true` and raw sockets failed/disabled)
-3. vfork/exec (final fallback)
+1. Raw CAN socket
+2. Persistent `cansend` shell, if `USE_PERSISTENT_SHELL=true`
+3. `vfork`/`exec` of `cansend` for each frame
 
-**Recommended configurations:**
-- For maximum speed on systems with raw socket support: `USE_RAW_CAN=true` (default)
-- For systems without raw sockets but needing high speed: `USE_RAW_CAN=false` + `USE_PERSISTENT_SHELL=true`
-- For maximum compatibility: both false (uses vfork/exec)
-```
+Rough local rates, for choosing a mode: raw sockets around 850 frames/s, `vfork`/`exec` around 550, persistent shell around 425. The persistent shell is the awkward one to debug. Leave both flags false unless you need the speed.
 
-### Client (`output/client.conf`)
+### Client
+
 ```
 SERVER_IP=127.0.0.1
 SERVER_PORT=50123
@@ -84,74 +75,35 @@ SERVER_PORT=50123
 
 ## Running
 
-### Basic (two terminals)
-Terminal 1:
 ```bash
-./output/server output/server.conf
+./output/server example_server.conf
+./output/client example_client.conf
 ```
 
-Terminal 2:
-```bash
-./output/client output/client.conf
-```
+On a flaky SSH session, `tmux new -s canserver` keeps the server alive after you detach with Ctrl-b then d. `tmux attach -t canserver` brings it back.
 
-### Using tmux (recommended for SSH sessions)
-Tmux keeps your server running even if your SSH connection drops.
+## Commands
 
-```bash
-# Start a new tmux session
-tmux new -s canserver
+- `CANSEND#<id>#<payload>#<interval_ms>#<bus>[#priority]` — repeat
+- `SEND_TASK#<id>#<payload>#<delay_ms>#<bus>[#priority]` — once
+- `LIST_TASKS`, `PAUSE <task_id>`, `RESUME <task_id>`, `KILL_TASK <task_id>`, `KILL_ALL_TASKS`
+- `LIST_CAN_INTERFACES` — rediscovers interfaces, then lists them
+- `SET_LOG_LEVEL <level>`, `LIST_THREADS`, `KILL_THREAD <id>`, `SHUTDOWN`, `RESTART`, `DISCONNECT`, `HELP`
+- `notice me senpai` — easter egg
 
-# Run the server
-./output/server output/server.conf
+Priority defaults to 5 and accepts `0`–`9` (higher runs first when deadlines tie). Times accept an optional `ms` suffix, and ids accept an optional `0x` prefix. `LIST_TASKS` includes the error string when a task has failed.
 
-# Detach from session: Press Ctrl+b, then d
-# Server continues running in background
+## Tests
 
-# Open client in a new terminal
-./output/client output/client.conf
-
-# Reattach to server session anytime
-tmux attach -t canserver
-
-# List all sessions
-tmux ls
-
-# Kill session when done
-tmux kill-session -t canserver
-```
-
-## Protocol Reference
-- `CANSEND#<id>#<payload>#<interval_ms>#<bus>[#priority]` — recurring transmissions.
-- `SEND_TASK#<id>#<payload>#<delay_ms>#<bus>[#priority]` — one-shot transmission.
-- `LIST_TASKS`, `PAUSE <task_id>`, `RESUME <task_id>`, `KILL_TASK <task_id>`, `KILL_ALL_TASKS`.
-- `LIST_CAN_INTERFACES` — refreshes and lists CAN/vCAN devices.
-- `notice me senpai` — will senpai notice you?
-- `SET_LOG_LEVEL <level>`, `LIST_THREADS`, `KILL_THREAD <id>`, `KILL_ALL`, `SHUTDOWN`, `RESTART`.
-
-Priority defaults to 5 and accepts digits `0–9` (higher runs earlier when deadlines tie). `interval_ms`/`delay_ms` accept optional `ms` suffix.
-
-- Runtime logs are appended to the configured log path. Priority for selecting where logs go:
-	1. `SERVER_LOG_PATH` environment variable (if set)
-	2. `LOG_PATH=` in the server configuration file
-	3. Platform default (`server.log` in CWD on Linux, `/data/local/tmp/server/server.log` on Android)
-- The server will attempt to create parent directories for the configured `LOG_PATH` and will fall back to stderr if it cannot write logs.
-- `LIST_TASKS` returns status plus error strings for failed tasks.
-- Child process failures (non-zero exit, signal) are tracked per task.
-
-## Testing & Diagnostics
-- `make test` runs parsing unit tests (gtest not required).
-- `test_integration.cpp` expects a running server on `127.0.0.1:50123`.
-- Use `candump -tz vcan0` to verify transmitted frames on vCAN.
+`make test` runs the parser tests. They do not need gtest installed as a separate project; they do need `libgtest`. `make integration` expects a server on `127.0.0.1:50123`. `candump -tz vcan0` shows frames that actually went out.
 
 ## Troubleshooting
-- **No CAN interfaces**: ensure `vcan0` exists or physical CAN devices are up.
-- **`cansend` not found**: install `can-utils` and confirm it is on `PATH`.
-- **Fork failures**: check system process limits (`ulimit -u`).
-- **Permission denied**: bring interfaces up as root or with appropriate capabilities.
+
+- No interfaces: bring up `vcan0` or the physical CAN device.
+- `cansend` missing: install `can-utils` and check `PATH`.
+- Fork failures: `ulimit -u`.
+- Permission denied on a raw socket: run as root, or `sudo setcap cap_net_raw,cap_sys_nice+ep ./output/server`.
 
 ## License
-MIT — see [LICENSE](./LICENSE).
 
-
-
+MIT. See [LICENSE](./LICENSE).

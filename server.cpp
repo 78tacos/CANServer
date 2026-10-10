@@ -2,130 +2,15 @@
 // Copyright (c) 2025 Joseph Ogle, Kunal Singh, and Deven Nasso
 
 /**
- * @file server.cpp - for Linux
- * @brief Multi-threaded TCP server for scheduling CAN bus transmissions and handling client commands.
+ * TCP server that schedules CAN frames from text commands.
  *
- * Overview
- * --------
- * This server accepts simple text commands over TCP and schedules CAN frame transmissions via
- * an in-process thread pool. Each client connection is handled by its own client-handler thread
- * which may schedule recurring or single-shot tasks. A dedicated CAN sender thread handles all
- * actual CAN transmissions using either raw CAN sockets or fork/exec `cansend` as fallback.
+ * Each client gets a handler thread. Delayed work waits on a timer thread, then
+ * runs on priority workers (higher priority first, FIFO on a tie). A dedicated
+ * sender thread transmits the frame: a raw CAN socket when USE_RAW_CAN is on,
+ * otherwise cansend through a persistent shell or vfork/exec.
  *
- * Scheduler changes
- * -----------------
- * The scheduling implementation uses a dedicated timer thread that manages delayed work and
- * dispatches ready tasks into a priority-based worker queue. Use `enqueue_after(duration, priority, fn)`
- * to schedule delayed execution — this replaces the earlier deadline-in-worker approach while
- * preserving priority and FIFO tie-break semantics.
- *
- * CAN Sender Thread
- * -----------------
- * A dedicated real-time thread handles all CAN frame transmissions. Tasks submit send requests to
- * a queue, and the CAN sender thread processes them sequentially. This design:
- *  - Isolates CAN I/O from task scheduling
- *  - Enables real-time scheduling (SCHED_FIFO) for consistent latency
- *  - Supports both raw CAN sockets and cansend fallback via USE_RAW_CAN config
- *  - Provides synchronous result reporting back to tasks
- *
- * Configuration
- * -------------
- * The server reads a simple key=value config file. Supported keys used by the code:
- *  - PORT=<port_number>
- *  - LOG_LEVEL=<DEBUG|INFO|WARNING|ERROR|NOLOG>
- *  - WORKER_THREADS=<n> if the workload is very high, this can be adjusted
- *  - LOG_PATH=<absolute_path>   # optional: overrides the log file path but SERVER_LOG_PATH env var overrides all
- *  - USE_RAW_CAN=<true|false>   # optional: use raw CAN sockets (true) or always use cansend (false), default: true
- *  - USE_PERSISTENT_SHELL=<true|false>  # optional: use persistent shell for cansend (true) or vfork/exec per send (false), default: false
- *
- * Send method priority (when USE_RAW_CAN=true, which is default):
- *  1. Raw CAN sockets (tried first if USE_RAW_CAN=true)
- *  2. Persistent shell (if USE_PERSISTENT_SHELL=true and raw sockets fail/disabled)
- *  3. vfork/exec per send (final fallback)
- *
- * Process management
- * ------------------
- *  - All child processes (persistent shell and cansend) use prctl(PR_SET_PDEATHSIG, SIGTERM)
- *    to ensure they terminate if the server dies unexpectedly, preventing orphaned processes.
- *  - The vfork/exec cansend path includes a 5-second timeout. If cansend hangs, the server
- *    logs an error, kills the hung process (SIGKILL), and marks the task as failed.
- *
- * Logging
- * -------
- * Log path selection order (highest priority first):
- *  1. SERVER_LOG_PATH environment variable
- *  2. LOG_PATH in the config file
- *  3. Platform default (on Linux: `server.log` in CWD)
- * The server attempts to create parent directories for the configured log path and falls back to
- * stderr on failure.
- *
- * Restart behavior
- * ----------------
- * A client can request a restart via the `RESTART` command. The server responds, sets a restart flag,
- * performs graceful cleanup, then `execv()`s the same binary/arguments to restart in-place. This preserves
- * process identity while reinitializing program state.
- *
- * Client commands (text protocol; server matches prefixes):
- *  - CANSEND#<id>#<payload>#<interval_ms>#<interface>[#priority]
- *      Schedule a recurring CAN transmit. Examples:
- *        CANSEND#123#DEADBEEF#1000#vcan0
- *        CANSEND#0x123#deadbeef#250ms#vcan0#7
- *      Notes: ID may be hex with 0x prefix; time may include "ms" suffix; priority optional (0-9), default 5.
- *
- *  - SEND_TASK#<id>#<payload>#<delay_ms>#<interface>[#priority]
- *      Schedule a single-shot send after delay_ms milliseconds. Same parsing rules as CANSEND.
- *
- *  - LIST_TASKS
- *      Returns per-client task list with status (running, paused, stopped, completed, error) and short error text if available.
- *
- *  - PAUSE <task_id>
- *  - RESUME <task_id>
- *      Pause or resume a specific task for this client connection.
- *
- *  - KILL_TASK <task_id>
- *  - KILL_ALL_TASKS
- *      Remove/stop one or all scheduled tasks for this client.
- *
- *  - LIST_CAN_INTERFACES
- *      Refresh and list discovered CAN/vCAN interfaces on the host.
- *
- *  - LIST_THREADS
- *      Returns the server-side ThreadRegistry contents (worker & client handler threads).
- *
- *  - SET_LOG_LEVEL <DEBUG|INFO|WARNING|ERROR|NOLOG>
- *      Change server log verbosity at runtime.
- *
- *  - KILL_ALL
- *      Best-effort: terminates processes spawned by this client (SIGTERM). Returns a confirmation string.
- *
- *  - KILL_THREAD <thread_id>
- *      Remove a thread entry from the ThreadRegistry (best-effort, informational).
- *
- *  - SHUTDOWN
- *      Client-requested graceful shutdown of the server.
- * 
- *  - RESTART
- *      Restart the server in-place using execv() after graceful cleanup.
- * 
- *  - DISCONNECT
- *      Disconnect from the server.
- * 
- *  - HELP
- *      Display all available commands and their usage.
- *
- *
- * Protocol notes:
- *  - Server replies to each command with a short text response (OK / ERROR / Unknown command).
- *  - Task IDs are generated as "task_<n>" per client session and returned on scheduling.
- *  - The ThreadPool uses std::chrono::steady_clock for deadlines; higher numeric priority runs earlier when deadlines tie.
- * 
- *  Notes & platform considerations
- * -------------------------------
- * - The server forks child processes to run `cansend`. The system must provide `cansend` (from can-utils)
- *   or the application must be adapted to send frames directly via PF_CAN sockets for environments where
- *   `cansend` isn't available.
- *
- * Dependencies: POSIX sockets, fork/wait, C++20, and `cansend` (from can-utils) available in PATH.
+ * The log file is SERVER_LOG_PATH, then LOG_PATH from the config, then ./server.log.
+ * RESTART cleans up and execv's this binary with the same arguments.
  */
 
 
@@ -210,23 +95,7 @@ struct ThreadInfo {
     std::chrono::steady_clock::time_point start_time; 
 };
 
-/**
- * @brief A thread-safe registry for managing active threads.
- *
- * The ThreadRegistry class provides a mechanism to track and manage information
- * about active threads in a multi-threaded application. It stores details such as
- * thread ID, name, status, and start time for each registered thread. All operations
- * are protected by a mutex to ensure thread safety.
- *
- * Key features:
- * - Add a new thread to the registry with its ID and name.
- * - Remove a thread from the registry by its ID.
- * - Print the list of active threads to standard output.
- * - Generate a string representation of the active threads.
- *
- * @note This class uses std::vector to store ThreadInfo objects and std::mutex for synchronization.
- *       It relies on std::chrono for timing and std::thread for thread IDs.
- */
+/** Mutex-protected list of live thread ids and names. */
 class ThreadRegistry {
 private:
     std::vector<ThreadInfo> threads;
@@ -239,7 +108,7 @@ public:
         info.id = id;
         info.name = name;
         info.status = "running";
-        info.start_time = std::chrono::steady_clock::now();  // Changed to steady_clock
+        info.start_time = std::chrono::steady_clock::now();
         threads.push_back(info);
     }
 
@@ -274,9 +143,9 @@ ThreadRegistry registry;
 
 // Global map to track PIDs to task IDs for error handling
 std::unordered_map<pid_t, std::string> globalPidToTaskId;
-std::mutex globalPidMutex;  // Protect the global map (at all costs)
+std::mutex globalPidMutex;
 
-// Add a new global map for task error messages
+// Error strings shown by LIST_TASKS. Guarded by globalErrorMutex.
 std::unordered_map<std::string, std::string> globalTaskErrors;
 std::mutex globalErrorMutex;
 
@@ -340,29 +209,10 @@ void shutdown_handler(int) {
     shutdownRequested = 1;
 }
 
-// Signal handler for SIGCHLD - now only for logging, reaping handled in tasks
+// Installed so SIGCHLD is caught. Reaping stays next to each vfork; a waitpid
+// loop here races with that path.
 void sigchld_handler(int s) {
     (void)s;
-    /* // Removed waitpid loop to avoid conflicts
-    int saved_errno = errno;
-    int status;
-    pid_t pid;
-    while ((pid = waitpid(-1, &status, WNOHANG)) > 0) {
-        if (WIFEXITED(status)) {
-            int exit_code = WEXITSTATUS(status);
-            if (exit_code != 0) {
-                logEvent(ERROR, "Child process " + std::to_string(pid) + " exited with error code " + std::to_string(exit_code));
-            } else {
-                logEvent(DEBUG, "Child process " + std::to_string(pid) + " exited successfully");
-            }
-        } else if (WIFSIGNALED(status)) {
-            int signal_num = WTERMSIG(status);
-            logEvent(ERROR, "Child process " + std::to_string(pid) + " terminated by signal " + std::to_string(signal_num));
-        }
-        // Optionally, remove PID from clientPids if tracked globally (but it's per-client)
-    }
-    errno = saved_errno;
-    */
 }
 
 // Get sockaddr, IPv4 or IPv6
@@ -374,7 +224,7 @@ void* get_in_addr(struct sockaddr* sa) {
 }
 
 // Log events with timestamp
-void logEvent(int level, const std::string& message) { //logging with hierarchy
+void logEvent(int level, const std::string& message) {
     if (level < log_level) {
         return; // Skip logging if message severity is below configured log_level
     }
@@ -387,7 +237,7 @@ void logEvent(int level, const std::string& message) { //logging with hierarchy
         logPath = g_logPath;
     } else {
         #if defined(__arm__) || defined(__aarch64__) || defined(__ARM_ARCH)
-            logPath = "server.log"; //change log path here
+            logPath = "server.log";
         #else
             logPath = "server.log";
         #endif
@@ -493,7 +343,7 @@ void trySetRealtimeScheduling(const std::string& threadName, int priority) {
     } else {
         if (rc == EPERM) {
             if (!warnedOnce.exchange(true)) {
-                logEvent(WARNING, "Insufficient privileges to apply SCHED_FIFO priority to " + threadName + "."); //Run as root or grant CAP_SYS_NICE.
+                logEvent(WARNING, "Insufficient privileges to apply SCHED_FIFO priority to " + threadName + "."); // needs root or CAP_SYS_NICE
             }
         } else {
             logEvent(WARNING, "Failed to apply SCHED_FIFO priority to " + threadName + ": " + std::strerror(rc));
@@ -1014,16 +864,9 @@ bool runCansendFallback(const std::string& command,
 }
 
 /**
- * @class ThreadPool
- * @brief A thread pool implementation that manages a fixed number of worker threads to execute tasks asynchronously.
- *
- * Tasks can be enqueued with a priority value. Higher priority tasks run first, and FIFO order is preserved for
- * equal priorities. Delayed work is handled by a dedicated timer thread that sleeps until a task is ready and then
- * dispatches it to the workers, avoiding deadline bookkeeping inside the workers themselves.
- *
- * @note The number of threads defaults to std::thread::hardware_concurrency(), but is clamped to at least 1.
- * @note Tasks are executed in worker threads, and exceptions in task functions are caught and ignored.
- * @note The destructor ensures all threads are joined after signaling them to stop.
+ * Fixed worker pool. Higher priority runs first; equal priorities stay FIFO.
+ * enqueue_after() parks work on a timer thread until it is due, then moves it
+ * onto the worker queue. Worker count is at least 1.
  */
 class ThreadPool {
 private:
@@ -1286,7 +1129,7 @@ std::vector<std::string> discoverCanInterfaces() {
     return interfaces;
 }
 
-// Add helper function to validate CAN interface
+// True when the name was in the last discovery pass.
 bool isValidCanInterface(const std::string& interface) {
     std::lock_guard<std::mutex> lock(canInterfacesMutex);
     return std::find(availableCanInterfaces.begin(), 
@@ -1465,7 +1308,7 @@ int main(int argc, char* argv[]) {
 
     listeningSocketFd.store(sockfd);
 
-    sa.sa_handler = sigchld_handler; // Reap all dead processes
+    sa.sa_handler = sigchld_handler;
     sigemptyset(&sa.sa_mask);
     sa.sa_flags = SA_RESTART;
     if (sigaction(SIGCHLD, &sa, NULL) == -1) {
@@ -1530,27 +1373,20 @@ int main(int argc, char* argv[]) {
 
         inet_ntop(their_addr.ss_family, get_in_addr((struct sockaddr*)&their_addr), s, sizeof s);
         std::cout << "Connection from: " << s << std::endl;
-        /* 
-        if (send (new_fd, "Hello, you are connected to the server!\n", 39, 0) == -1) { 
-            logEvent(ERROR, "send");
-            std::perror("send");
-        }
-            */
         logEvent(INFO, "Connection from: " + std::string(s));
 
         // Create a new thread to handle the client communication
         std::thread clientThread([new_fd, s, &pool]() {
-            registry.add(std::this_thread::get_id(), "client handler for " + std::string(s));  // Add to registry
+            registry.add(std::this_thread::get_id(), "client handler for " + std::string(s));
             ThreadInfo info;
             info.id = std::this_thread::get_id();
             info.name = "client handler for " + std::string(s);
             info.status = "running";
-            info.start_time = std::chrono::steady_clock::now();  // Changed to steady_clock
+            info.start_time = std::chrono::steady_clock::now();
             std::array<char, MAXDATASIZE> buf;
             int numbytes;
             bool niceDisconnect = false;
-            int priority = 5; //needs to be implemented in the ui but it doesn't matter
-            // `time_ms` parsed from commands determines recurring interval or single-shot delay
+            int priority = 5; // used when a command omits priority
             std::string canInterface; //can0, vcan1, etc.
             std::string canIdStr; //CAN ID and data in hex
             std::vector<pid_t> clientPids;  // Track PIDs of spawned processes
@@ -1560,7 +1396,7 @@ int main(int argc, char* argv[]) {
             std::atomic<int> taskCounter{0};  // For unique task IDs
             std::unordered_map<std::string, std::function<void(const std::string& receivedMsg)>> commandMap;
 
-            commandMap["SHUTDOWN"] = [&](const std::string&) { //shutdown server
+            commandMap["SHUTDOWN"] = [&](const std::string&) {
                 logEvent(INFO, "Received SHUTDOWN command from " + std::string(s));
                 requestGracefulShutdown();
             };
@@ -1608,25 +1444,12 @@ int main(int argc, char* argv[]) {
                 send(new_fd, resp, std::strlen(resp), 0);
             };
 
-            /*
-            commandMap["KILL_ALL"] = [&](const std::string&) { // kills all processes started by this client. not sure of usefulness yet. doesn't seem to work right
-                logEvent(INFO, "Received KILL_ALL command from " + std::string(s));
-                for (auto pid : clientPids) {
-                    if (kill(pid, SIGTERM) == -1) {
-                        logEvent(WARNING, "Failed to kill PID " + std::to_string(pid) + ": " + std::string(strerror(errno)));
-                    }
-                }
-                clientPids.clear();
-                send(new_fd, "All processes killed.\n", 48, 0);
-            };
-            */
-
-            commandMap["LIST_THREADS"] = [&](const std::string&) { //not sure about this
+            commandMap["LIST_THREADS"] = [&](const std::string&) {
                 logEvent(INFO, "Received LIST_THREADS command from " + std::string(s));
                 send(new_fd, registry.toString().c_str(), registry.toString().size(), 0);
             };
 
-            commandMap["RESTART"] = [&](const std::string&) { //does it work?
+            commandMap["RESTART"] = [&](const std::string&) {
                 logEvent(INFO, "Received RESTART command from " + std::string(s));
                 send(new_fd, "Server restarting...\n", 21, 0);
                 restartRequested.store(true);
@@ -2070,11 +1893,10 @@ int main(int argc, char* argv[]) {
             taskActive.clear();
             {
                 std::lock_guard<std::mutex> lock(globalErrorMutex);
-                // Remove error messages for this client's tasks
+                // taskActive was just cleared, so this cannot tell which task_* errors
+                // belonged to this client. Drop every task_* entry.
                 for (auto it = globalTaskErrors.begin(); it != globalTaskErrors.end();) {
                     if (it->first.find("task_") == 0) {
-                        // Check if this task belongs to this client by checking if it's in taskActive
-                        // Since taskActive is already cleared, we can't verify, so just log
                         logEvent(DEBUG, "Cleaned up error for task " + it->first);
                         it = globalTaskErrors.erase(it);
                     } else {
@@ -2094,7 +1916,7 @@ int main(int argc, char* argv[]) {
             clientPids.clear();
 
             close(new_fd);
-            registry.remove(std::this_thread::get_id());  // Remove from registry
+            registry.remove(std::this_thread::get_id());
         });
 
         clientThread.detach();

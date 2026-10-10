@@ -1,10 +1,8 @@
 /*
- * P1 SAMPLE CLIENT
- * ---------------
+ * Interactive TCP client for the CAN server.
  * Author: Thoshitha Gamage
  * Date: 01/29/2025
- * License: MIT License
- * Description: This is a sample code for CS447 Spring 2025 P1 client code.
+ * License: MIT
  */
 
 #include <iostream>
@@ -45,7 +43,6 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 
-    // Read configuration from file
     std::optional<std::string> serverIP, serverPort;
     std::filesystem::path configFilePath(argv[1]);
 
@@ -70,13 +67,11 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 
-    // Set up connection hints
     addrinfo hints, *servinfo, *p;
     memset(&hints, 0, sizeof hints);
     hints.ai_family = AF_UNSPEC;
     hints.ai_socktype = SOCK_STREAM;
 
-    // Get address information
     int rv = getaddrinfo(serverIP->c_str(), serverPort->c_str(), &hints, &servinfo);
     if (rv!= 0) {
         std::cerr << std::format("getaddrinfo: {}\n", gai_strerror(rv));
@@ -84,7 +79,6 @@ int main(int argc, char* argv[]) {
     }
 
     int sockfd;
-    // Loop through results and try to connect
     for (p = servinfo; p!= nullptr; p = p->ai_next) {
         sockfd = socket(p->ai_family, p->ai_socktype, p->ai_protocol);
         if (sockfd == -1) {
@@ -106,7 +100,6 @@ int main(int argc, char* argv[]) {
         return 2;
     }
 
-    // Display connection information
     char s[INET6_ADDRSTRLEN];
     inet_ntop(p->ai_family, get_in_addr((struct sockaddr*)p->ai_addr), s, sizeof s);
     std::cout << std::format("client: connecting to {}\n", s);
@@ -117,7 +110,6 @@ int main(int argc, char* argv[]) {
     std::string userInput;
     bool niceExit = false;
 
-    // Interactive loop for sending and receiving messages
     while (niceExit == false) {
         std::cout << "> ";
         std::getline(std::cin, userInput);
@@ -127,11 +119,8 @@ int main(int argc, char* argv[]) {
         }
 
         if (userInput == "exit") {
-            break; // Exit the loop if the user types "exit"
-        }/* else if (userInput == "BYE"){
-            niceExit = true;
             break;
-        }*/
+        }
 
         if (send(sockfd, userInput.c_str(), userInput.size(), 0) == -1) {
             perror("send");

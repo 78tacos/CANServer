@@ -35,7 +35,7 @@ RUN chown -R canuser:canuser /build
 # Switch to canuser before building to avoid root-owned artifacts
 USER canuser
 
-# Build the server statically (not that it matters)
+# Build the server
 RUN make server LDFLAGS="-static -pthread"
 
 

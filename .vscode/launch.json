@@ -4,12 +4,12 @@
       "type": "cppdbg",
       "request": "launch",
       "name": "Launch Server",
-      "program": "${workspaceFolder}/output/server", // Updated to run from output folder
+      "program": "${workspaceFolder}/output/server",
       "args": [
         "server.conf"
       ],
       "stopAtEntry": false,
-      "cwd": "${workspaceFolder}/output", // Updated to run from output folder
+      "cwd": "${workspaceFolder}/output",
       "environment": [],
       "externalConsole": false,
       "MIMode": "gdb",

@@ -114,12 +114,8 @@ class ServerIntegrationTest : public ::testing::Test {
 protected:
     std::string response;
     
-    void SetUp() override {
-        // Optional: Add setup code if needed
-    }
-    
     void TearDown() override {
-        // Cleanup: kill all tasks after each test
+        // Leave the shared server without tasks from this case.
         sendCommand("KILL_ALL_TASKS\n", response);
     }
 };
